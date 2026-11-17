@@ -9,6 +9,8 @@ namespace NeoHub.Api.WebSocket.Models
     [JsonDerivedType(typeof(ArmAwayMessage), "arm_away")]
     [JsonDerivedType(typeof(ArmHomeMessage), "arm_home")]
     [JsonDerivedType(typeof(ArmNightMessage), "arm_night")]
+    [JsonDerivedType(typeof(ArmHomeInstantMessage), "arm_home_instant")]
+    [JsonDerivedType(typeof(ArmAwayInstantMessage), "arm_away_instant")]
     [JsonDerivedType(typeof(DisarmMessage), "disarm")]
     [JsonDerivedType(typeof(BypassZoneMessage), "bypass_zone")]
     [JsonDerivedType(typeof(FullStateMessage), "full_state")]
@@ -32,6 +34,12 @@ namespace NeoHub.Api.WebSocket.Models
     public record ArmHomeMessage : ArmCommandMessage;
     public record ArmNightMessage : ArmCommandMessage;
     public record DisarmMessage : ArmCommandMessage;
+
+    /// <summary>Stay arm with no entry delay ("Stay Instant"): ArmingMode.StayArmWithNoEntryDelay.</summary>
+    public record ArmHomeInstantMessage : ArmCommandMessage;
+
+    /// <summary>Away arm with no entry delay ("Away Instant"): ArmingMode.AwayArmWithNoEntryDelay (untested on a real panel).</summary>
+    public record ArmAwayInstantMessage : ArmCommandMessage;
 
     public record BypassZoneMessage : WebSocketMessage
     {
