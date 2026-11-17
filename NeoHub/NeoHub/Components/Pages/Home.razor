@@ -141,6 +141,14 @@
                                                    Disabled="@(!partition.IsReady || commandInProgress)">
                                             Stay
                                         </MudButton>
+                                        <MudButton Variant="Variant.Outlined"
+                                                   Color="Color.Warning"
+                                                   Size="Size.Small"
+                                                   StartIcon="@Icons.Material.Filled.FlashOn"
+                                                   OnClick="@(() => ArmPartitionAsync(sessionId, partitionNumber, ArmingMode.StayArmWithNoEntryDelay))"
+                                                   Disabled="@(!partition.IsReady || commandInProgress)">
+                                            Stay Instant
+                                        </MudButton>
                                         <MudButton Variant="Variant.Filled"
                                                    Color="Color.Dark"
                                                    Size="Size.Small"
