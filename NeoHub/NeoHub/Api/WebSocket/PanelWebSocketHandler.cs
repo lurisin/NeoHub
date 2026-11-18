@@ -369,7 +369,17 @@ namespace NeoHub.Api.WebSocket
                 _logger.LogWarning("Client {ClientId} → command_result {RequestId}: failed, code {Code}: {Message}",
                     clientId, command.RequestId, message.Code, message.Message);
 
-            await SendMessageAsync(webSocket, message, clientId);
+            try
+            {
+                await SendMessageAsync(webSocket, message, clientId);
+            }
+            catch (Exception ex)
+            {
+                // Typically the client went away while the command ran. Caught here so that it does not reach
+                // ProcessMessageAsync, which would answer with an "error" message instead of the command_result.
+                _logger.LogWarning("Could not send command_result {RequestId} to client {ClientId}: {Error}",
+                    command.RequestId, clientId, ex.Message);
+            }
         }
 
         /// <summary>Sent in full_state so clients know which optional protocol features they can use.</summary>
