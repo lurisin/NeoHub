@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using DSC.TLink.ITv2.MediatR;
 using NeoHub.Api.WebSocket.Models;
 using NeoHub.Services;
@@ -100,7 +101,8 @@ namespace NeoHub.Api.WebSocket
                     if (result.MessageType == WebSocketMessageType.Text)
                     {
                         var json = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                        _logger.LogTrace("Client {ClientId} ← {Json}", clientId, json);
+                        if (_logger.IsEnabled(LogLevel.Trace))
+                            _logger.LogTrace("Client {ClientId} ← {Json}", clientId, RedactAccessCodes(json));
                         await ProcessMessageAsync(webSocket, json, clientId);
                     }
                 }
@@ -177,15 +179,29 @@ namespace NeoHub.Api.WebSocket
             }
             catch (JsonException ex)
             {
-                _logger.LogError(ex, "Client {ClientId} sent invalid JSON: {Json}", clientId, json);
+                _logger.LogError(ex, "Client {ClientId} sent invalid JSON: {Json}", clientId, RedactAccessCodes(json));
                 await SendErrorAsync(webSocket, $"Invalid JSON: {ex.Message}", clientId);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error processing message from client {ClientId}: {Json}", clientId, json);
+                _logger.LogError(ex, "Error processing message from client {ClientId}: {Json}", clientId, RedactAccessCodes(json));
                 await SendErrorAsync(webSocket, $"Processing error: {ex.Message}", clientId);
             }
         }
+
+        /// <summary>
+        /// The value of a "code" property in raw client JSON, also when the JSON is invalid or cut off:
+        /// a string (with escapes, possibly unterminated), a flat array or object, or a bare value such as a
+        /// number, each up to the next ',', '}' or ']'.
+        /// </summary>
+        private static readonly Regex _accessCodeValue = new(
+            @"(""code""\s*:\s*)(""(?:[^""\\]|\\.)*""?[^,}\]]*|\[[^\]]*\]?[^,}\]]*|\{[^}]*\}?[^,}\]]*|[^,}\]]+)",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+        /// <summary>Raw client JSON for log lines, with every access code value replaced by "***" (null is kept).</summary>
+        internal static string RedactAccessCodes(string json) =>
+            _accessCodeValue.Replace(json, m =>
+                m.Groups[2].Value.Trim() == "null" ? m.Value : m.Groups[1].Value + "\"***\"");
 
         private async Task SendFullStateAsync(System.Net.WebSockets.WebSocket webSocket, string clientId)
         {
