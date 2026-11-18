@@ -17,17 +17,31 @@ namespace NeoHub.Api.WebSocket.Models
     [JsonDerivedType(typeof(PartitionUpdateMessage), "partition_update")]
     [JsonDerivedType(typeof(ZoneUpdateMessage), "zone_update")]
     [JsonDerivedType(typeof(ErrorMessage), "error")]
+    [JsonDerivedType(typeof(CommandResultMessage), "command_result")]
     public abstract record WebSocketMessage;
 
     #region Client → Server
 
     public record GetFullStateMessage : WebSocketMessage;
 
-    public abstract record ArmCommandMessage : WebSocketMessage
+    /// <summary>
+    /// A client command that accepts an optional <c>request_id</c> (a client-chosen string of at most
+    /// <see cref="MaxRequestIdLength"/> characters). When it is set, the server answers that client with
+    /// exactly one <see cref="CommandResultMessage"/> carrying the same id, instead of an <c>error</c> on failure.
+    /// </summary>
+    public interface ICorrelatedCommandMessage
+    {
+        const int MaxRequestIdLength = 64;
+
+        string? RequestId { get; }
+    }
+
+    public abstract record ArmCommandMessage : WebSocketMessage, ICorrelatedCommandMessage
     {
         public required string SessionId { get; init; }
         public required byte PartitionNumber { get; init; }
         public string? Code { get; init; }
+        public string? RequestId { get; init; }
     }
 
     public record ArmAwayMessage : ArmCommandMessage;
@@ -41,7 +55,7 @@ namespace NeoHub.Api.WebSocket.Models
     /// <summary>Away arm with no entry delay ("Away Instant"): ArmingMode.AwayArmWithNoEntryDelay (untested on a real panel).</summary>
     public record ArmAwayInstantMessage : ArmCommandMessage;
 
-    public record BypassZoneMessage : WebSocketMessage
+    public record BypassZoneMessage : WebSocketMessage, ICorrelatedCommandMessage
     {
         public required string SessionId { get; init; }
         public required byte PartitionNumber { get; init; }
@@ -49,6 +63,7 @@ namespace NeoHub.Api.WebSocket.Models
         /// <summary>true = bypass, false = unbypass</summary>
         public required bool Bypass { get; init; }
         public string? Code { get; init; }
+        public string? RequestId { get; init; }
     }
 
     #endregion
@@ -58,6 +73,9 @@ namespace NeoHub.Api.WebSocket.Models
     public record FullStateMessage : WebSocketMessage
     {
         public required List<SessionDto> Sessions { get; init; }
+
+        /// <summary>Optional protocol features this server supports, so clients can detect them.</summary>
+        public IReadOnlyList<string> Capabilities { get; init; } = Array.Empty<string>();
     }
 
     public record PartitionUpdateMessage : WebSocketMessage
@@ -78,6 +96,19 @@ namespace NeoHub.Api.WebSocket.Models
     public record ErrorMessage : WebSocketMessage
     {
         public required string Message { get; init; }
+    }
+
+    /// <summary>
+    /// Outcome of a command that carried a request_id, sent only to the client that sent it.
+    /// <see cref="Code"/> is the panel's numeric response code when the panel rejected the command,
+    /// otherwise null. On success, <see cref="Code"/> and <see cref="Message"/> are null.
+    /// </summary>
+    public record CommandResultMessage : WebSocketMessage
+    {
+        public required string RequestId { get; init; }
+        public required bool Success { get; init; }
+        public int? Code { get; init; }
+        public string? Message { get; init; }
     }
 
     #endregion

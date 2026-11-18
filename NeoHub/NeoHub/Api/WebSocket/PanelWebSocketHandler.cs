@@ -128,6 +128,13 @@ namespace NeoHub.Api.WebSocket
 
                 _logger.LogDebug("Client {ClientId} request: {MessageType}", clientId, message.GetType().Name);
 
+                if (message is ICorrelatedCommandMessage { RequestId.Length: > ICorrelatedCommandMessage.MaxRequestIdLength })
+                {
+                    await SendErrorAsync(webSocket,
+                        $"Invalid request_id: at most {ICorrelatedCommandMessage.MaxRequestIdLength} characters", clientId);
+                    return;
+                }
+
                 switch (message)
                 {
                     case GetFullStateMessage:
@@ -223,7 +230,7 @@ namespace NeoHub.Api.WebSocket
                 sessions.Sum(s => s.Partitions.Count),
                 sessions.Sum(s => s.Zones.Count));
 
-            var message = new FullStateMessage { Sessions = sessions };
+            var message = new FullStateMessage { Sessions = sessions, Capabilities = _capabilities };
             await SendMessageAsync(webSocket, message, clientId);
         }
 
@@ -236,12 +243,10 @@ namespace NeoHub.Api.WebSocket
             _logger.LogInformation("Client {ClientId} → {Command}: Session={SessionId}, Partition={Partition}",
                 clientId, command.GetType().Name, command.SessionId, command.PartitionNumber);
 
-            var result = await _commandService.ArmAsync(command.SessionId, command.PartitionNumber, mode, command.Code);
+            var result = await RunCommandAsync(command, clientId,
+                () => _commandService.ArmAsync(command.SessionId, command.PartitionNumber, mode, command.Code));
 
-            if (!result.Success)
-            {
-                await SendErrorAsync(webSocket, result.ErrorMessage ?? "Command failed", clientId);
-            }
+            await SendCommandOutcomeAsync(webSocket, command, result, "Command failed", clientId);
         }
 
         private async Task HandleDisarmCommandAsync(
@@ -252,12 +257,10 @@ namespace NeoHub.Api.WebSocket
             _logger.LogInformation("Client {ClientId} → {Command}: Session={SessionId}, Partition={Partition}",
                 clientId, command.GetType().Name, command.SessionId, command.PartitionNumber);
 
-            var result = await _commandService.DisarmAsync(command.SessionId, command.PartitionNumber, command.Code);
+            var result = await RunCommandAsync(command, clientId,
+                () => _commandService.DisarmAsync(command.SessionId, command.PartitionNumber, command.Code));
 
-            if (!result.Success)
-            {
-                await SendErrorAsync(webSocket, result.ErrorMessage ?? "Command failed", clientId);
-            }
+            await SendCommandOutcomeAsync(webSocket, command, result, "Command failed", clientId);
         }
 
         private async Task HandleBypassZoneCommandAsync(
@@ -269,14 +272,77 @@ namespace NeoHub.Api.WebSocket
                 "Client {ClientId} → bypass_zone: Session={SessionId}, Partition={Partition}, Zone={Zone}, Bypass={Bypass}",
                 clientId, command.SessionId, command.PartitionNumber, command.ZoneNumber, command.Bypass);
 
-            var result = await _commandService.BypassZoneAsync(
-                command.SessionId, command.PartitionNumber, command.ZoneNumber, command.Bypass, command.Code);
+            var result = await RunCommandAsync(command, clientId,
+                () => _commandService.BypassZoneAsync(
+                    command.SessionId, command.PartitionNumber, command.ZoneNumber, command.Bypass, command.Code));
 
-            if (!result.Success)
+            await SendCommandOutcomeAsync(webSocket, command, result, "Bypass command failed", clientId);
+        }
+
+        /// <summary>
+        /// Runs a panel command. Without a request_id an exception propagates to ProcessMessageAsync as
+        /// before (generic "error" message); with one it becomes a failed result, so the client still gets
+        /// its single command_result.
+        /// </summary>
+        private async Task<PanelCommandResult> RunCommandAsync(
+            ICorrelatedCommandMessage command,
+            string clientId,
+            Func<Task<PanelCommandResult>> run)
+        {
+            if (command.RequestId is null)
+                return await run();
+
+            try
             {
-                await SendErrorAsync(webSocket, result.ErrorMessage ?? "Bypass command failed", clientId);
+                return await run();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error processing {MessageType} from client {ClientId}",
+                    command.GetType().Name, clientId);
+                return PanelCommandResult.Error($"Processing error: {ex.Message}");
             }
         }
+
+        /// <summary>
+        /// Reports a command's outcome. Without a request_id: an "error" message on failure and nothing on
+        /// success, as before. With one: exactly one command_result to this client.
+        /// </summary>
+        private async Task SendCommandOutcomeAsync(
+            System.Net.WebSockets.WebSocket webSocket,
+            ICorrelatedCommandMessage command,
+            PanelCommandResult result,
+            string defaultErrorMessage,
+            string clientId)
+        {
+            if (command.RequestId is null)
+            {
+                if (!result.Success)
+                    await SendErrorAsync(webSocket, result.ErrorMessage ?? defaultErrorMessage, clientId);
+                return;
+            }
+
+            var message = result.Success
+                ? new CommandResultMessage { RequestId = command.RequestId, Success = true }
+                : new CommandResultMessage
+                {
+                    RequestId = command.RequestId,
+                    Success = false,
+                    Code = result.PanelResponseCode,
+                    Message = result.DisplayMessage ?? defaultErrorMessage
+                };
+
+            if (result.Success)
+                _logger.LogDebug("Client {ClientId} → command_result {RequestId}: success", clientId, command.RequestId);
+            else
+                _logger.LogWarning("Client {ClientId} → command_result {RequestId}: failed, code {Code}: {Message}",
+                    clientId, command.RequestId, message.Code, message.Message);
+
+            await SendMessageAsync(webSocket, message, clientId);
+        }
+
+        /// <summary>Sent in full_state so clients know which optional protocol features they can use.</summary>
+        private static readonly string[] _capabilities = { "command_result" };
 
         private static readonly JsonSerializerOptions _jsonOptions = new()
         {
