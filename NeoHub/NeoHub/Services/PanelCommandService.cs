@@ -115,18 +115,34 @@ namespace NeoHub.Services
 
             return bypassResult;
         }
+
+        /// <summary>
+        /// Longest wait for the panel's answer to one command sent by this service. The TLink receivers
+        /// have no timeout of their own, so without this bound an unanswered command would wait forever.
+        /// </summary>
+        private static readonly TimeSpan PanelAnswerTimeout = TimeSpan.FromSeconds(8);
+
+        private static readonly string PanelAnswerTimeoutMessage =
+            $"No confirmation from the panel within {PanelAnswerTimeout.TotalSeconds:0} s; check the partition state";
+
         private async Task<PanelCommandResult> SendCommandAsync(string sessionId, IMessageData message)
         {
+            using var timeout = new CancellationTokenSource(PanelAnswerTimeout);
             try
             {
+                // WaitAsync keeps the bound even if a lower layer does not observe the token.
                 SessionResponse response = await _mediator.Send(new SessionCommand
                 {
                     SessionID = sessionId,
                     MessageData = message
-                });
+                }, timeout.Token).WaitAsync(timeout.Token);
 
                 if (response.Success)
                     return PanelCommandResult.Ok();
+
+                // SessionMediator turns the cancellation into a failed response, so check our own token.
+                if (timeout.IsCancellationRequested && !response.PanelResponseCode.HasValue)
+                    return PanelAnswerTimedOut(message);
 
                 _logger.LogWarning("Command failed: [{Code}] {Error}", response.ErrorCode, response.ErrorMessage);
 
@@ -137,11 +153,23 @@ namespace NeoHub.Services
                     ? PanelCommandResult.Error(response.ErrorCode.Value, response.ErrorMessage ?? response.ErrorCode.Value.ToString())
                     : PanelCommandResult.Error(response.ErrorMessage ?? "Unknown error");
             }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+            {
+                return PanelAnswerTimedOut(message);
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error sending command");
                 return PanelCommandResult.Error(ex.Message);
             }
+        }
+
+        private PanelCommandResult PanelAnswerTimedOut(IMessageData message)
+        {
+            // The panel may still act on the command; a late answer is dropped by the session.
+            _logger.LogWarning("No answer from the panel to {Command} within {Seconds} s",
+                message.GetType().Name, PanelAnswerTimeout.TotalSeconds);
+            return PanelCommandResult.Error(PanelAnswerTimeoutMessage);
         }
     }
 }
