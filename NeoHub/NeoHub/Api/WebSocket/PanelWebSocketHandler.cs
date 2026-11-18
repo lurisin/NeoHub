@@ -205,7 +205,8 @@ namespace NeoHub.Api.WebSocket
                             {
                                 PartitionNumber = kvp.Key,
                                 Name = kvp.Value.DisplayName,
-                                Status = kvp.Value.EffectiveStatus
+                                Status = kvp.Value.EffectiveStatus,
+                                Ready = kvp.Value.IsReady
                             })
                             .ToList(),
                         Zones = zones
@@ -342,7 +343,7 @@ namespace NeoHub.Api.WebSocket
         }
 
         /// <summary>Sent in full_state so clients know which optional protocol features they can use.</summary>
-        private static readonly string[] _capabilities = { "command_result" };
+        private static readonly string[] _capabilities = { "command_result", "partition_ready" };
 
         private static readonly JsonSerializerOptions _jsonOptions = new()
         {
@@ -406,14 +407,16 @@ namespace NeoHub.Api.WebSocket
                 return;
             }
 
-            _logger.LogDebug("Broadcasting partition_update: Session={SessionId}, Partition={Partition}, Status={Status}",
-                e.SessionId, e.Partition.PartitionNumber, e.Partition.EffectiveStatus);
+            _logger.LogDebug("Broadcasting partition_update: Session={SessionId}, Partition={Partition}, Status={Status}, Ready={Ready}",
+                e.SessionId, e.Partition.PartitionNumber, e.Partition.EffectiveStatus, e.Partition.IsReady);
 
+            // Raised for every partition update, including a ready-status change with no status change.
             var message = new PartitionUpdateMessage
             {
                 SessionId = e.SessionId,
                 PartitionNumber = e.Partition.PartitionNumber,
-                Status = e.Partition.EffectiveStatus
+                Status = e.Partition.EffectiveStatus,
+                Ready = e.Partition.IsReady
             };
 
             _ = BroadcastMessageAsync(message);

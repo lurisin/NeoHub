@@ -83,6 +83,8 @@ namespace NeoHub.Api.WebSocket.Models
         public required string SessionId { get; init; }
         public required byte PartitionNumber { get; init; }
         public required PartitionStatus Status { get; init; }
+        /// <summary>The panel reports the partition ready to arm (PartitionState.IsReady).</summary>
+        public bool Ready { get; init; }
     }
 
     public record ZoneUpdateMessage : WebSocketMessage
@@ -128,6 +130,8 @@ namespace NeoHub.Api.WebSocket.Models
         public required byte PartitionNumber { get; init; }
         public required string Name { get; init; }
         public required PartitionStatus Status { get; init; }
+        /// <summary>The panel reports the partition ready to arm (PartitionState.IsReady).</summary>
+        public bool Ready { get; init; }
     }
 
     public record ZoneDto
