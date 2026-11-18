@@ -130,6 +130,9 @@ namespace NeoHub.Services
 
                 _logger.LogWarning("Command failed: [{Code}] {Error}", response.ErrorCode, response.ErrorMessage);
 
+                if (response.PanelResponseCode.HasValue)
+                    return PanelCommandResult.Rejected(response.PanelResponseCode.Value, response.ErrorMessage ?? "Unknown error");
+
                 return response.ErrorCode.HasValue
                     ? PanelCommandResult.Error(response.ErrorCode.Value, response.ErrorMessage ?? response.ErrorCode.Value.ToString())
                     : PanelCommandResult.Error(response.ErrorMessage ?? "Unknown error");

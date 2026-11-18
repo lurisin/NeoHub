@@ -24,6 +24,12 @@ namespace NeoHub.Services
         /// <summary>Human-readable error detail. Set for both infrastructure and panel-level failures.</summary>
         public string? ErrorMessage { get; init; }
 
+        /// <summary>
+        /// Numeric panel response code (TLink <c>CommandResponseCode</c>) when the panel itself rejected the command.
+        /// Null on success and on infrastructure errors.
+        /// </summary>
+        public int? PanelResponseCode { get; init; }
+
         public static PanelCommandResult Ok() => new() { Success = true };
 
         public static PanelCommandResult Error(TLinkErrorCode code, string message) =>
@@ -31,5 +37,8 @@ namespace NeoHub.Services
 
         public static PanelCommandResult Error(string message) =>
             new() { Success = false, ErrorMessage = message };
+
+        public static PanelCommandResult Rejected(int panelResponseCode, string message) =>
+            new() { Success = false, PanelResponseCode = panelResponseCode, ErrorMessage = message };
     }
 }

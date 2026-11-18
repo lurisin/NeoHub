@@ -67,6 +67,7 @@ namespace DSC.TLink.ITv2.MediatR
                     {
                         Success = false,
                         ErrorMessage = errorResponse.ResponseCode.Description(),
+                        PanelResponseCode = (int)errorResponse.ResponseCode,
                     };
                 }
 
