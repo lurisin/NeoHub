@@ -425,7 +425,7 @@
 		{
 			var result = await CommandService.ArmAsync(sessionId, partition, mode);
 			if (!result.Success)
-				Snackbar.Add($"Arm failed: {result.ErrorMessage}", Severity.Error);
+				Snackbar.Add($"Arm failed: {result.DisplayMessage}", Severity.Error);
 		}
 		finally
 		{

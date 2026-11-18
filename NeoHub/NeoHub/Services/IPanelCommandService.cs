@@ -30,6 +30,15 @@ namespace NeoHub.Services
         /// </summary>
         public int? PanelResponseCode { get; init; }
 
+        /// <summary>
+        /// Short text for people when a known rejection means more than <see cref="ErrorMessage"/>
+        /// (for example code 1 on an arm command). Null otherwise.
+        /// </summary>
+        public string? UserMessage { get; init; }
+
+        /// <summary>The text to show people: <see cref="UserMessage"/> when set, otherwise <see cref="ErrorMessage"/>.</summary>
+        public string? DisplayMessage => UserMessage ?? ErrorMessage;
+
         public static PanelCommandResult Ok() => new() { Success = true };
 
         public static PanelCommandResult Error(TLinkErrorCode code, string message) =>
