@@ -7,6 +7,8 @@ namespace DSC.TLink.ITv2.MediatR;
 /// On success, <see cref="MessageData"/> holds the panel's response (e.g. a <see cref="CommandResponse"/>).
 /// On failure, <see cref="ErrorCode"/> identifies the infrastructure error and <see cref="ErrorMessage"/> gives details.
 /// When the panel itself rejected the command, <see cref="PanelResponseCode"/> holds its numeric response code.
+/// When the panel interface answered with a NACK (<c>Command_Error</c>), <see cref="Success"/> stays true as before
+/// and <see cref="PanelNack"/> names the NACK code.
 /// </summary>
 public record SessionResponse
 {
@@ -20,4 +22,12 @@ public record SessionResponse
     /// (panel-level rejection). Null on success and on infrastructure errors.
     /// </summary>
     public int? PanelResponseCode { get; init; }
+
+    /// <summary>
+    /// Name of the ITv2 NACK code (for example <c>SystemBusy</c>) when the panel interface answered the command
+    /// with a <c>Command_Error</c> instead of a command response, so the command was not carried out.
+    /// <see cref="Success"/> is still true in that case, as it always was; callers that need to know check this.
+    /// Null otherwise.
+    /// </summary>
+    public string? PanelNack { get; init; }
 }

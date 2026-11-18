@@ -36,6 +36,13 @@ namespace NeoHub.Services
         /// </summary>
         public string? UserMessage { get; init; }
 
+        /// <summary>
+        /// Name of the ITv2 NACK code when the panel interface refused the command with a <c>Command_Error</c>.
+        /// <see cref="Success"/> is still true then, as it always was, so existing callers are unaffected;
+        /// the command was not carried out. Null otherwise.
+        /// </summary>
+        public string? PanelNack { get; init; }
+
         /// <summary>The text to show people: <see cref="UserMessage"/> when set, otherwise <see cref="ErrorMessage"/>.</summary>
         public string? DisplayMessage => UserMessage ?? ErrorMessage;
 

@@ -323,17 +323,31 @@ namespace NeoHub.Api.WebSocket
                 return;
             }
 
-            var message = result.Success
-                ? new CommandResultMessage { RequestId = command.RequestId, Success = true }
-                : new CommandResultMessage
-                {
-                    RequestId = command.RequestId,
-                    Success = false,
-                    Code = result.PanelResponseCode,
-                    Message = result.DisplayMessage ?? defaultErrorMessage
-                };
+            // A NACK from the panel interface (Command_Error) counts as success for the "error" path above,
+            // as it always did, but the command was not carried out, so a command_result reports a failure.
+            // Its code is an ITv2 NACK code, not a panel response code, so "code" stays null.
+            var message = result switch
+            {
+                { Success: true, PanelNack: null } =>
+                    new CommandResultMessage { RequestId = command.RequestId, Success = true },
+                { Success: true } =>
+                    new CommandResultMessage
+                    {
+                        RequestId = command.RequestId,
+                        Success = false,
+                        Message = $"Command refused by the panel interface (NACK: {result.PanelNack})"
+                    },
+                _ =>
+                    new CommandResultMessage
+                    {
+                        RequestId = command.RequestId,
+                        Success = false,
+                        Code = result.PanelResponseCode,
+                        Message = result.DisplayMessage ?? defaultErrorMessage
+                    }
+            };
 
-            if (result.Success)
+            if (message.Success)
                 _logger.LogDebug("Client {ClientId} → command_result {RequestId}: success", clientId, command.RequestId);
             else
                 _logger.LogWarning("Client {ClientId} → command_result {RequestId}: failed, code {Code}: {Message}",

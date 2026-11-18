@@ -71,6 +71,21 @@ namespace DSC.TLink.ITv2.MediatR
                     };
                 }
 
+                if (result.Value is CommandError nack)
+                {
+                    _logger.LogWarning("Panel interface refused command {Command}: NACK {NackCode}",
+                        nack.NackCommand, nack.NackCode);
+
+                    // Still reported as success, as before, so existing callers behave the same;
+                    // PanelNack lets callers that care detect it.
+                    return new SessionResponse
+                    {
+                        Success = true,
+                        MessageData = result.Value,
+                        PanelNack = nack.NackCode.ToString()
+                    };
+                }
+
                 return new SessionResponse
                 {
                     Success = true,

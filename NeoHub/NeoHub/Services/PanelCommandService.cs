@@ -149,7 +149,9 @@ namespace NeoHub.Services
                 }, timeout.Token).WaitAsync(timeout.Token);
 
                 if (response.Success)
-                    return PanelCommandResult.Ok();
+                    return response.PanelNack is null
+                        ? PanelCommandResult.Ok()
+                        : PanelCommandResult.Ok() with { PanelNack = response.PanelNack };
 
                 // SessionMediator turns the cancellation into a failed response, so check our own token.
                 if (timeout.IsCancellationRequested && !response.PanelResponseCode.HasValue)

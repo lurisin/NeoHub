@@ -103,7 +103,8 @@ namespace NeoHub.Api.WebSocket.Models
     /// <summary>
     /// Outcome of a command that carried a request_id, sent only to the client that sent it.
     /// <see cref="Code"/> is the panel's numeric response code when the panel rejected the command,
-    /// otherwise null. On success, <see cref="Code"/> and <see cref="Message"/> are null.
+    /// otherwise null (including when the panel interface refused it with a NACK).
+    /// On success, <see cref="Code"/> and <see cref="Message"/> are null.
     /// </summary>
     public record CommandResultMessage : WebSocketMessage
     {
