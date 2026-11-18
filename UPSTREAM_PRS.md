@@ -3,7 +3,7 @@
 > **Drafts only.** Nothing in this file has been submitted upstream. Nothing may be
 > submitted (no PR, issue or comment) without the owner's explicit OK.
 
-This fork's `toronto` branch is upstream `master` (61a1a0e) plus these commits:
+This fork is upstream `master` (61a1a0e) plus these commits, in this order:
 
 | Commit subject | Upstream status |
 |---|---|
@@ -11,8 +11,15 @@ This fork's `toronto` branch is upstream `master` (61a1a0e) plus these commits:
 | `Add arm_home_instant / arm_away_instant WebSocket commands` | Draft PR (section A) |
 | `Add "Stay Instant" arm button to the home page` | Optional second commit of the same draft PR (section A) |
 | `Add UPSTREAM_PRS.md with upstream PR drafts` | Fork only, never submit |
+| `Carry the panel response code through SessionResponse and PanelCommandResult` | Draft PR (section D) |
+| `Bound the panel answer wait for PanelCommandService commands at 8 s` | Draft PR (section D) |
+| `Show "Partition not ready to arm (zone open)" for arm rejections with code 1` | Draft PR (section D) |
+| `Answer WebSocket commands that carry a request_id with command_result` | Draft PR (section D) |
+| `Send the partition ready state to WebSocket clients` | Draft PR (section D) |
+| `Add upstream PR draft D: command results and partition ready state` | Fork only, never submit |
 
 Section C records why panic / fire / auxiliary activation (`ModuleControl_Activate_FAP`, 0x0908) is not proposed.
+Section D is a separate draft PR (command results, panel response codes, an 8 s bound on the panel's answer, partition ready state). It builds on section A.
 
 ---
 
@@ -188,3 +195,138 @@ As recorded in the research notes; "(inference)" and "(discussion)" mark sources
 - https://github.com/LawPaul/HA_DSC_Neo_ITv2/issues/12 "Virtual inputs" (open, 2026-11-09; discussion, 0x0915, wrong layouts fail silently with only a Simple_Ack)
 - https://github.com/LawPaul/HA_DSC_Neo_ITv2/issues/11 (2026-10-16; discussion, 0x0902 rejected with code 3)
 - https://github.com/BrianHumlicek/NeoHub/issues/42 (discussion, physical keypad F/A/P presses, not 0x0908)
+
+---
+
+## D. Correlated command results, panel response codes and the partition ready state
+
+- **Proposed title:** `WebSocket: command_result for commands with a request_id, and partition ready state`
+- **Base branch:** `master`, after section A (or together with it; see below).
+- **Commits to cherry-pick, in this order, onto a branch that already has section A's first commit:**
+  1. `Carry the panel response code through SessionResponse and PanelCommandResult`
+  2. `Bound the panel answer wait for PanelCommandService commands at 8 s`
+  3. `Show "Partition not ready to arm (zone open)" for arm rejections with code 1`
+  4. `Answer WebSocket commands that carry a request_id with command_result`
+  5. `Send the partition ready state to WebSocket clients`
+
+  Do not include PR #45 or the UPSTREAM_PRS.md commits.
+- **Dependency on section A:** the five commits were cherry-picked in a scratch clone onto upstream `master` 61a1a0e plus
+  `Add arm_home_instant / arm_away_instant WebSocket commands`: no conflicts, and the solution builds with 14 warnings and
+  0 errors, the same warnings as `master`. Onto plain 61a1a0e, commits 1-3 apply cleanly, but commit 4 conflicts in
+  `Api/WebSocket/Models/WebSocketMessage.cs`, because its context includes the `arm_home_instant` / `arm_away_instant`
+  lines. So either submit this after section A is merged, or resolve that conflict by hand (and then drop the
+  instant-arm types from the PR text).
+- **TLink is touched:** `SessionResponse` (public record) gains `int? PanelResponseCode`, and `SessionMediator` sets it in
+  one line. The `CommandResponseCode` enum is not renamed or changed. Say this clearly in the PR, since it changes the
+  library's public surface.
+- **Independent parts:** commits 1-3 are useful on their own (numeric code for callers, no unbounded wait, a clear UI
+  message). If the maintainer prefers smaller PRs, they can go first as their own PR, and commits 4-5 follow.
+
+### PR body
+
+````markdown
+## Summary
+
+WebSocket clients can now learn the outcome of a command and whether a partition is ready to arm:
+
+- Commands (`arm_away`, `arm_home`, `arm_night`, `arm_home_instant`, `arm_away_instant`, `disarm`, `bypass_zone`) accept an optional `request_id`. When it is set, the server answers that client, and only that client, with exactly one `command_result`.
+- When the panel rejects a command, the numeric panel response code is kept (`SessionResponse.PanelResponseCode`, `PanelCommandResult.PanelResponseCode`) instead of only its description text.
+- An arm command rejected with response code 1 is shown as "Partition not ready to arm (zone open)" in `command_result` and in the home page's error snackbar.
+- `PanelCommandService` waits at most 8 s for the panel's answer to each command it sends. Today an unanswered command waits forever.
+- `full_state` and `partition_update` carry the partition's ready state (`PartitionState.IsReady`), and `full_state` lists `capabilities` so clients can detect these additions.
+
+Clients that send no `request_id` get the same replies as before.
+
+## Motivation
+
+- A client cannot tell whether an arm or disarm worked: failures produce an `error` message with nothing tying it to the request, and success produces nothing. An automation that arms the alarm cannot report a refusal, for example because a door is open.
+- The panel's answer to "arm while a zone is open" is response code 1, whose TLink description is a long generic list ("Cannot Exit Configuration/Ignore Firmware/..."). Users need "not ready to arm".
+- NeoHub already tracks `IsReady` (the home page uses it to enable the arm buttons), but WebSocket clients cannot see it.
+- TLink's command receivers have no timeout. If the panel never answers, `ArmAsync` / `DisarmAsync` never return, and the WebSocket handler, which awaits each command inline, stops reading that client's messages.
+
+## Protocol additions
+
+Client command, with the new optional field (`type` must stay the first property, as for every message):
+
+```json
+{"type": "arm_home", "session_id": "<session id>", "partition_number": 1, "code": null, "request_id": "<client id, at most 64 characters>"}
+```
+
+Server answer, to the requesting client only, exactly once per command that has a `request_id`:
+
+```json
+{"type": "command_result", "request_id": "<same>", "success": false, "code": 1, "message": "Partition not ready to arm (zone open)"}
+```
+
+| Outcome | `success` | `code` | `message` |
+|---|---|---|---|
+| Panel accepted | `true` | `null` | `null` |
+| Panel rejected | `false` | panel response code (JSON integer) | its description; `"Partition not ready to arm (zone open)"` for code 1 on any arm command |
+| Session not found, missing access code, transport error, exception | `false` | `null` | the existing error text (`"Processing error: ..."` for an exception) |
+| No panel answer within 8 s | `false` | `null` | `"No confirmation from the panel within 8 s; check the partition state"` (the panel may still have acted) |
+
+- With a `request_id`, no `error` message is sent for that command.
+- A `request_id` longer than 64 characters is refused with an `error` message, and the command is not run.
+- A message that cannot be deserialized still gets the generic `error` message, because its `request_id` cannot be read reliably.
+
+State messages:
+
+- `full_state`: each partition gains `"ready": true|false`; the message gains `"capabilities": ["command_result", "partition_ready"]`.
+- `partition_update` gains `"ready": true|false`. `PanelStateService.UpdatePartition` raises `PartitionStateChanged` on every update, so a ready-status change without a status change is already broadcast; it now carries the value.
+
+## Changes
+
+- TLink `ITv2/MediatR/SessionResponse.cs`, `SessionMediator.cs`: `PanelResponseCode` (`int?`, because `CommandResponseCode` is internal) is set when a `CommandResponse` rejects the command. `ErrorMessage` and `ErrorCode` are unchanged.
+- `Services/IPanelCommandService.cs`: `PanelCommandResult` gains `PanelResponseCode`, `UserMessage` and `DisplayMessage` (`UserMessage ?? ErrorMessage`), and a `Rejected(...)` factory.
+- `Services/PanelCommandService.cs`: a `CancellationTokenSource` of 8 s per command, passed to `SessionCommand` and to `WaitAsync`. Because `SessionMediator` turns the cancellation into a failed response, the timeout is detected from the service's own token. `ArmAsync` sets `UserMessage` for code 1. Other `SessionCommand` callers (configuration reads, Dev Console, user and access-code services) are unchanged.
+- `Components/Pages/Home.razor`: the arm error snackbar shows `DisplayMessage`.
+- `Api/WebSocket/Models/WebSocketMessage.cs`: `ICorrelatedCommandMessage` (`RequestId`, `MaxRequestIdLength = 64`) on `ArmCommandMessage` and `BypassZoneMessage`; new `CommandResultMessage` (`command_result`); `Ready` on `PartitionDto` and `PartitionUpdateMessage`; `Capabilities` on `FullStateMessage`.
+- `Api/WebSocket/PanelWebSocketHandler.cs`: `RunCommandAsync` / `SendCommandOutcomeAsync` send either the old `error` (no `request_id`) or one `command_result`; `request_id` length check; `ready` and `capabilities` in `full_state` / `partition_update`.
+
+## Compatibility
+
+- Additive. Without a `request_id`, every reply is the same as before, byte for byte, including the `error` text for a code-1 arm rejection (the friendly text is only in `command_result` and the UI).
+- One behaviour change for all clients: a command the panel does not answer now fails after 8 s (`error`, or `command_result`), where it used to wait forever.
+- Clients should send `request_id` only when `full_state` lists `command_result` in `capabilities`. Older servers ignore the unknown property, so a client that sends it anyway gets the old replies.
+- Clients that read `full_state` / `partition_update` strictly must accept the new `ready` and `capabilities` properties.
+
+## Test evidence
+
+Panel (PowerSeries Neo, HS2032 class, TL280-family communicator): arming with `StayArmWithNoEntryDelay` while a door was open was rejected three times with response code 1, and accepted once the door was closed. That is the basis for the code-1 text, which is applied to all arm modes.
+
+Offline:
+
+- `dotnet build NeoHub.sln` after every commit: 14 warnings and 0 errors, the same warnings as `master` (compared without line numbers).
+- A throwaway console harness (not part of this PR) ran the real `PanelWebSocketHandler`, `PanelCommandService`, `PanelStateService` and TLink `SessionMediator`, with a fake `IMediator` that forwards `SessionCommand` to that `SessionMediator` and a fake `IITv2Session` that plays the panel:
+  - 69 command scenarios without `request_id` (each command type with success, code 1, code 17, code 18, default code, missing code, unknown session, transport failure, exception, `Command_Error`; invalid JSON; unknown type): replies byte-identical to the base build.
+  - With `request_id`, for every command type: success, unknown session, missing access code (disarm / bypass), panel code 1 (arm types get the friendly text, disarm / bypass the description), panel code 17, transport failure, exception. Exactly one `command_result`, never an `error`, and `code` is a JSON integer.
+  - Timeouts with a fake session that never answers: every command type fails after 8.0 s, also when the session ignores the cancellation token. Bypass where the write and the exit both go unanswered: 16.0 s.
+  - `command_result` reaches only the requesting socket; `request_id` of 64 characters accepted, 65 refused without running the command.
+  - `full_state` has `capabilities` and `ready`; a ready-status notification with no status change broadcasts `partition_update` with the new `ready`.
+  - TLink `MessageReceiver`: after the wait is cancelled, a late panel answer is consumed by the cancelled receiver without an exception, a retry gets its own answer, and both receivers are then removed as completed.
+  - Over a real `WebSocket` pair, 400 `partition_update` broadcasts overlapping 100 `command_result` replies arrived intact (500 valid JSON frames, 100 distinct request ids).
+  - No access code appears in any frame or in any new log line.
+
+Untested:
+
+- `command_result`, the 8 s bound and `ready` on a real panel.
+- Whether the panel sends a ready-status notification after arming: `ArmDisarmNotificationHandler` does not change `IsReady`, so `ready` can stay `true` while armed until the next ready-status notification (the initial status pull sets it to `false` when armed). This PR sends `IsReady` as it is.
+
+## Known limitations (not changed here)
+
+- The handler still processes one message at a time per client, so a second command waits behind the first: up to 8 s per panel command, and up to three 8 s waits for `bypass_zone` (enter, write, exit).
+- A `Command_Error` (communicator NACK) answer is treated as success by `SessionMediator`, so it gives `success: true`, as it gives no `error` today.
+- When the 8 s bound cancels a command, `SessionMediator` still logs "Error handling command" with a `TaskCanceledException` at Error level, followed by `PanelCommandService`'s warning.
+- Two existing error-log lines (`sent invalid JSON: {Json}`, `Error processing message from client {ClientId}: {Json}`) and the trace line for every received message write the raw client JSON, including any `code`.
+````
+
+### Checklist for the owner before submitting
+
+- [ ] The owner has given an explicit OK to open this PR.
+- [ ] Section A is merged upstream, or submitted first; otherwise resolve the `WebSocketMessage.cs` conflict by hand and rebuild.
+- [ ] Fetch upstream `master`. If it has moved past 61a1a0e, cherry-pick onto the new tip, resolve any conflicts and rebuild.
+- [ ] Use a dedicated branch for the PR (not the fork's working branch), so the PR #45 and UPSTREAM_PRS.md commits stay out.
+- [ ] Decide whether to split commits 1-3 into their own PR.
+- [ ] Decide whether the `Co-Authored-By` / `Claude-Session` trailers stay in the commit messages sent upstream.
+- [ ] Do the local test with the owner present: arm with a door open (expect `command_result` with `code` 1 and the friendly text, and the Home Assistant error), arm and disarm normally (expect `success: true`), and watch `ready` follow the door. Update "Test evidence" and "Untested".
+- [ ] Check the PR text, logs and screenshots for personal data: no names, addresses, panel or installer IDs, IP addresses, session IDs or access codes.
