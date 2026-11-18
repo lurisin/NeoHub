@@ -104,6 +104,16 @@ namespace NeoHub.Services
             if (!enterResult.Success)
             {
                 _logger.LogWarning("Bypass failed: could not enter config mode. {Error}", enterResult.ErrorMessage);
+
+                // Without an answer the panel may still have entered user bypass programming, so leave it,
+                // as the finally block below does once the panel has confirmed the enter.
+                if (enterResult.TimedOut)
+                {
+                    var exitResult = await SendCommandAsync(sessionId, new ConfigurationExit { Partition = partition });
+                    if (!exitResult.Success)
+                        _logger.LogWarning("Failed to exit config mode after the unanswered enter. {Error}", exitResult.ErrorMessage);
+                }
+
                 return enterResult;
             }
 
@@ -182,7 +192,7 @@ namespace NeoHub.Services
             // The panel may still act on the command; a late answer is dropped by the session.
             _logger.LogWarning("No answer from the panel to {Command} within {Seconds} s",
                 message.GetType().Name, PanelAnswerTimeout.TotalSeconds);
-            return PanelCommandResult.Error(PanelAnswerTimeoutMessage);
+            return PanelCommandResult.Error(PanelAnswerTimeoutMessage) with { TimedOut = true };
         }
     }
 }

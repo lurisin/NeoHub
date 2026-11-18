@@ -43,6 +43,9 @@ namespace NeoHub.Services
         /// </summary>
         public string? PanelNack { get; init; }
 
+        /// <summary>True when the panel did not answer in time; the panel may still have acted on the command.</summary>
+        public bool TimedOut { get; init; }
+
         /// <summary>The text to show people: <see cref="UserMessage"/> when set, otherwise <see cref="ErrorMessage"/>.</summary>
         public string? DisplayMessage => UserMessage ?? ErrorMessage;
 
