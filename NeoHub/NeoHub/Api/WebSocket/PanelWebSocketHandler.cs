@@ -222,7 +222,7 @@ namespace NeoHub.Api.WebSocket
                                 PartitionNumber = kvp.Key,
                                 Name = kvp.Value.DisplayName,
                                 Status = kvp.Value.EffectiveStatus,
-                                Ready = kvp.Value.IsReady
+                                Ready = ReadyForClients(kvp.Value)
                             })
                             .ToList(),
                         Zones = zones
@@ -448,7 +448,7 @@ namespace NeoHub.Api.WebSocket
             }
 
             _logger.LogDebug("Broadcasting partition_update: Session={SessionId}, Partition={Partition}, Status={Status}, Ready={Ready}",
-                e.SessionId, e.Partition.PartitionNumber, e.Partition.EffectiveStatus, e.Partition.IsReady);
+                e.SessionId, e.Partition.PartitionNumber, e.Partition.EffectiveStatus, ReadyForClients(e.Partition));
 
             // Raised for every partition update, including a ready-status change with no status change.
             var message = new PartitionUpdateMessage
@@ -456,7 +456,7 @@ namespace NeoHub.Api.WebSocket
                 SessionId = e.SessionId,
                 PartitionNumber = e.Partition.PartitionNumber,
                 Status = e.Partition.EffectiveStatus,
-                Ready = e.Partition.IsReady
+                Ready = ReadyForClients(e.Partition)
             };
 
             _ = BroadcastMessageAsync(message);
@@ -523,6 +523,15 @@ namespace NeoHub.Api.WebSocket
         #endregion
 
         #region Helpers
+
+        /// <summary>
+        /// The "ready" flag sent to clients: the panel's ready flag while the partition is disarmed, otherwise false.
+        /// PartitionState.IsReady only changes on ready-status notifications, which the panel sends while disarmed,
+        /// so after arming it would keep its last value (usually true); the status pull already sets it to false while
+        /// armed. Based on EffectiveStatus, so the exit delay counts as not ready too.
+        /// </summary>
+        private static bool ReadyForClients(Services.Models.PartitionState partition) =>
+            partition.IsReady && partition.EffectiveStatus == Services.Models.PartitionStatus.Disarmed;
 
         private static string DetermineDeviceClass(Services.Models.ZoneState zone)
         {
