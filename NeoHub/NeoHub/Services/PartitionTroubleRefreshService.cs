@@ -255,7 +255,10 @@ namespace NeoHub.Services
                         // Re-read requested after an arm rejection; the periodic schedule is not moved.
                         await Task.Delay(ImmediateRefreshDelay, ct);
                         foreach (var partition in worker.TakePending())
-                            await RefreshPartitionAsync(worker, partition, ct);
+                        {
+                            if (!await RefreshPartitionAsync(worker, partition, ct))
+                                break;
+                        }
                     }
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -288,11 +291,17 @@ namespace NeoHub.Services
             foreach (var partition in partitions)
             {
                 ct.ThrowIfCancellationRequested();
-                await RefreshPartitionAsync(worker, partition, ct);
+                if (!await RefreshPartitionAsync(worker, partition, ct))
+                {
+                    // The panel did not answer; do not queue more requests behind it in this round.
+                    _logger.LogDebug("Trouble refresh round ended early: no answer from the panel");
+                    break;
+                }
             }
         }
 
-        private async Task RefreshPartitionAsync(SessionWorker worker, byte partition, CancellationToken ct)
+        /// <summary>Reads and applies one partition's trouble flag. Returns false when the panel did not answer in time.</summary>
+        private async Task<bool> RefreshPartitionAsync(SessionWorker worker, byte partition, CancellationToken ct)
         {
             lock (worker.Gate)
             {
@@ -307,18 +316,19 @@ namespace NeoHub.Services
                 if (!CanRead(worker, out var reason))
                 {
                     _logger.LogDebug("Trouble refresh of partition {Partition} skipped: {Reason}", partition, reason);
-                    return;
+                    return true;
                 }
 
-                var (troubles, error) = await ReadTroublesAsync(worker.SessionId, partition, ct);
+                var (troubles, error, noAnswer) = await ReadTroublesAsync(worker.SessionId, partition, ct);
                 if (troubles is not bool present)
                 {
                     ReportFailure(worker, partition, error!);
-                    return;
+                    return !noAnswer;
                 }
 
                 ReportSuccess(worker);
                 ApplyTroubles(worker, partition, present);
+                return true;
             }
             finally
             {
@@ -350,9 +360,10 @@ namespace NeoHub.Services
 
         /// <summary>
         /// Reads PartitionStatus2.TroublesPresent for one partition. Returns the flag, or null and the reason
-        /// when there is no usable answer within <see cref="PanelCommandService.PanelAnswerTimeout"/>.
+        /// when there is no usable answer; NoAnswer is true when the panel did not answer within
+        /// <see cref="PanelCommandService.PanelAnswerTimeout"/>.
         /// </summary>
-        private async Task<(bool? Troubles, string? Error)> ReadTroublesAsync(string sessionId, byte partition, CancellationToken ct)
+        private async Task<(bool? Troubles, string? Error, bool NoAnswer)> ReadTroublesAsync(string sessionId, byte partition, CancellationToken ct)
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(PanelCommandService.PanelAnswerTimeout);
@@ -369,25 +380,27 @@ namespace NeoHub.Services
                 // SessionMediator turns a cancellation into a failed response, so check the tokens.
                 ct.ThrowIfCancellationRequested();
                 if (!response.Success)
-                    return (null, timeout.IsCancellationRequested ? NoAnswerText : response.ErrorMessage ?? "request failed");
+                    return timeout.IsCancellationRequested
+                        ? (null, NoAnswerText, true)
+                        : (null, response.ErrorMessage ?? "request failed", false);
                 if (response.PanelNack is not null)
-                    return (null, $"refused by the panel interface (NACK: {response.PanelNack})");
+                    return (null, $"refused by the panel interface (NACK: {response.PanelNack})", false);
                 if (response.MessageData is not ModulePartitionStatus status)
-                    return (null, $"unexpected answer {response.MessageData?.GetType().Name ?? "(none)"}");
+                    return (null, $"unexpected answer {response.MessageData?.GetType().Name ?? "(none)"}", false);
                 if (status.Partition != partition)
-                    return (null, $"answer for partition {status.Partition}");
+                    return (null, $"answer for partition {status.Partition}", false);
                 if (status.PartitionStatus.Length < 2)
-                    return (null, "answer without the second status byte");
+                    return (null, "answer without the second status byte", false);
 
-                return (status.Status2.HasFlag(ModulePartitionStatus.PartitionStatus2.TroublesPresent), null);
+                return (status.Status2.HasFlag(ModulePartitionStatus.PartitionStatus2.TroublesPresent), null, false);
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
-                return (null, NoAnswerText);
+                return (null, NoAnswerText, true);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                return (null, ex.Message);
+                return (null, ex.Message, false);
             }
         }
 
