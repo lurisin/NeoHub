@@ -326,7 +326,7 @@ namespace NeoHub.Services
                     return !noAnswer;
                 }
 
-                ReportSuccess(worker);
+                ReportSuccess(worker, partition);
                 ApplyTroubles(worker, partition, present);
                 return true;
             }
@@ -428,30 +428,24 @@ namespace NeoHub.Services
         {
             bool warn;
             lock (worker.Gate)
-            {
-                warn = !worker.FailureWarned;
-                worker.FailureWarned = true;
-            }
+                warn = worker.WarnedPartitions.Add(partition);
 
             if (warn)
                 _logger.LogWarning(
-                    "Could not read the trouble status of partition {Partition}: {Error}. Keeping the last value; further failures are logged at Debug until a read succeeds",
+                    "Could not read the trouble status of partition {Partition}: {Error}. Keeping the last value; further failures of this partition are logged at Debug until a read succeeds",
                     partition, error);
             else
                 _logger.LogDebug("Could not read the trouble status of partition {Partition}: {Error}", partition, error);
         }
 
-        private void ReportSuccess(SessionWorker worker)
+        private void ReportSuccess(SessionWorker worker, byte partition)
         {
             bool recovered;
             lock (worker.Gate)
-            {
-                recovered = worker.FailureWarned;
-                worker.FailureWarned = false;
-            }
+                recovered = worker.WarnedPartitions.Remove(partition);
 
             if (recovered)
-                _logger.LogInformation("Trouble status reads work again");
+                _logger.LogInformation("Trouble status reads of partition {Partition} work again", partition);
         }
 
         private int GetIntervalSeconds(string sessionId) =>
@@ -479,7 +473,12 @@ namespace NeoHub.Services
             public CancellationToken Token { get; }
             public Task Completion { get; set; } = Task.CompletedTask;
             public object Gate { get; } = new();
-            public bool FailureWarned { get; set; }
+
+            /// <summary>
+            /// Partitions whose last read failed and was already reported as a Warning (guarded by <see cref="Gate"/>).
+            /// Per partition, so one partition that keeps failing does not warn again each time another one succeeds.
+            /// </summary>
+            public HashSet<byte> WarnedPartitions { get; } = new();
 
             /// <summary>Partition being read right now, if any (guarded by <see cref="Gate"/>).</summary>
             public byte? Reading { get; set; }
