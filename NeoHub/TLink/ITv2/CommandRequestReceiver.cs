@@ -50,6 +50,11 @@ internal sealed class CommandRequestReceiver : IMessageReceiver
 
     public bool TryReceive(ITv2Packet packet)
     {
+        // A receiver whose wait was cancelled (timeout) stays registered until the next cleanup. It must not take
+        // a later answer of the same type, which belongs to the next request (the panel may send it without an ack).
+        if (IsCompleted)
+            return false;
+
         if (IsExpected(packet.Message))
         {
             Complete(packet.Message);
@@ -75,6 +80,9 @@ internal sealed class CommandRequestReceiver : IMessageReceiver
 
     public bool TryReceiveSubMessage(IMessageData message)
     {
+        if (IsCompleted)
+            return false;
+
         if (IsExpected(message))
         {
             Complete(message);
