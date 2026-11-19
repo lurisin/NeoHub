@@ -222,7 +222,8 @@ namespace NeoHub.Api.WebSocket
                                 PartitionNumber = kvp.Key,
                                 Name = kvp.Value.DisplayName,
                                 Status = kvp.Value.EffectiveStatus,
-                                Ready = ReadyForClients(kvp.Value)
+                                Ready = ReadyForClients(kvp.Value),
+                                Troubles = kvp.Value.TroublesPresent
                             })
                             .ToList(),
                         Zones = zones
@@ -383,7 +384,7 @@ namespace NeoHub.Api.WebSocket
         }
 
         /// <summary>Sent in full_state so clients know which optional protocol features they can use.</summary>
-        private static readonly string[] _capabilities = { "command_result", "partition_ready" };
+        private static readonly string[] _capabilities = { "command_result", "partition_ready", "partition_troubles" };
 
         private static readonly JsonSerializerOptions _jsonOptions = new()
         {
@@ -447,16 +448,17 @@ namespace NeoHub.Api.WebSocket
                 return;
             }
 
-            _logger.LogDebug("Broadcasting partition_update: Session={SessionId}, Partition={Partition}, Status={Status}, Ready={Ready}",
-                e.SessionId, e.Partition.PartitionNumber, e.Partition.EffectiveStatus, ReadyForClients(e.Partition));
+            _logger.LogDebug("Broadcasting partition_update: Session={SessionId}, Partition={Partition}, Status={Status}, Ready={Ready}, Troubles={Troubles}",
+                e.SessionId, e.Partition.PartitionNumber, e.Partition.EffectiveStatus, ReadyForClients(e.Partition), e.Partition.TroublesPresent);
 
-            // Raised for every partition update, including a ready-status change with no status change.
+            // Raised for every partition update, including a ready-status or trouble change with no status change.
             var message = new PartitionUpdateMessage
             {
                 SessionId = e.SessionId,
                 PartitionNumber = e.Partition.PartitionNumber,
                 Status = e.Partition.EffectiveStatus,
-                Ready = ReadyForClients(e.Partition)
+                Ready = ReadyForClients(e.Partition),
+                Troubles = e.Partition.TroublesPresent
             };
 
             _ = BroadcastMessageAsync(message);

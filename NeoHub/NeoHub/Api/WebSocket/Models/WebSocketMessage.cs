@@ -85,6 +85,8 @@ namespace NeoHub.Api.WebSocket.Models
         public required PartitionStatus Status { get; init; }
         /// <summary>The partition is disarmed and the panel reports it ready to arm (PartitionState.IsReady).</summary>
         public bool Ready { get; init; }
+        /// <summary>The panel reports one or more troubles for the partition (PartitionState.TroublesPresent).</summary>
+        public bool Troubles { get; init; }
     }
 
     public record ZoneUpdateMessage : WebSocketMessage
@@ -133,6 +135,8 @@ namespace NeoHub.Api.WebSocket.Models
         public required PartitionStatus Status { get; init; }
         /// <summary>The partition is disarmed and the panel reports it ready to arm (PartitionState.IsReady).</summary>
         public bool Ready { get; init; }
+        /// <summary>The panel reports one or more troubles for the partition (PartitionState.TroublesPresent).</summary>
+        public bool Troubles { get; init; }
     }
 
     public record ZoneDto
