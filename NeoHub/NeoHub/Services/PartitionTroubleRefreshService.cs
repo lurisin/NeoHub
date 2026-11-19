@@ -313,7 +313,10 @@ namespace NeoHub.Services
             try
             {
                 // Checked before each partition, so a command that starts during a round skips the rest of it.
-                if (!CanRead(worker, out var reason))
+                var canRead = CanRead(worker, out var reason);
+                if (canRead || reason == ProgrammingModeReason)
+                    ReportProgrammingPause(worker, pausedNow: !canRead);
+                if (!canRead)
                 {
                     _logger.LogDebug("Trouble refresh of partition {Partition} skipped: {Reason}", partition, reason);
                     return true;
@@ -347,7 +350,7 @@ namespace NeoHub.Services
             else if (session.ConfigLock.CurrentCount == 0)
                 reason = "configuration operation in progress";
             else if (session.IsInProgrammingMode)
-                reason = "panel in programming mode";
+                reason = ProgrammingModeReason;
             else if (_commands.IsCommandInProgress(worker.SessionId))
                 reason = "command waiting for the panel";
             else
@@ -356,6 +359,31 @@ namespace NeoHub.Services
                 return true;
             }
             return false;
+        }
+
+        private const string ProgrammingModeReason = "panel in programming mode";
+
+        /// <summary>
+        /// Logs at Information when reads start and stop being skipped because the panel reports programming mode
+        /// (SessionState.IsInProgrammingMode, from the lead-in and lead-out notifications). The flag also covers
+        /// installer writes from the web UI, which do not hold ConfigLock; logging the pause makes a flag that never
+        /// clears (a missed lead-out) visible instead of silently stopping the refresh.
+        /// </summary>
+        private void ReportProgrammingPause(SessionWorker worker, bool pausedNow)
+        {
+            bool changed;
+            lock (worker.Gate)
+            {
+                changed = worker.PausedForProgramming != pausedNow;
+                worker.PausedForProgramming = pausedNow;
+            }
+
+            if (!changed)
+                return;
+            if (pausedNow)
+                _logger.LogInformation("Trouble refresh paused while the panel reports programming mode");
+            else
+                _logger.LogInformation("Trouble refresh resumed after programming mode");
         }
 
         /// <summary>
@@ -479,6 +507,9 @@ namespace NeoHub.Services
             /// Per partition, so one partition that keeps failing does not warn again each time another one succeeds.
             /// </summary>
             public HashSet<byte> WarnedPartitions { get; } = new();
+
+            /// <summary>Reads are being skipped because of programming mode (guarded by <see cref="Gate"/>).</summary>
+            public bool PausedForProgramming { get; set; }
 
             /// <summary>Partition being read right now, if any (guarded by <see cref="Gate"/>).</summary>
             public byte? Reading { get; set; }
