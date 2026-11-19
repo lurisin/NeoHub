@@ -28,7 +28,7 @@ namespace NeoHub.Services
             _connectionSettings.CurrentValue.FindBySessionId(sessionId);
 
         private const int NotReadyToArmResponseCode = 1;
-        private const string NotReadyToArmMessage = "Partition not ready to arm (zone open)";
+        private const string NotReadyToArmMessage = "Partition not ready to arm";
 
         public async Task<PanelCommandResult> ArmAsync(string sessionId, byte partition, ArmingMode mode, string? accessCode = null)
         {
@@ -48,9 +48,10 @@ namespace NeoHub.Services
 
             var result = await SendCommandAsync(sessionId, message);
 
-            // Response code 1 to an arm command means the partition is not ready, for example a zone
-            // is open (seen on a PowerSeries Neo: rejected with code 1 while a door was open, accepted
-            // once it was closed). ErrorMessage keeps the generic description of code 1.
+            // Response code 1 to an arm command means the partition is not ready to arm. One cause is an
+            // open zone (seen on a PowerSeries Neo: rejected with code 1 while a door was open, accepted
+            // once it was closed); others, such as a trouble that blocks arming, may give the same code,
+            // so the text does not name a cause. ErrorMessage keeps the generic description of code 1.
             if (result.PanelResponseCode == NotReadyToArmResponseCode)
                 result = result with { UserMessage = NotReadyToArmMessage };
 
