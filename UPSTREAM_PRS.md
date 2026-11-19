@@ -33,6 +33,10 @@ This fork is upstream `master` (61a1a0e) plus these commits, in this order:
 | `Log undecoded panel notifications once per command word` | Draft PR (section E) |
 | `End a trouble refresh round when the panel does not answer` | Draft PR (section E) |
 | `Add upstream PR draft E: partition trouble state` | Fork only, never submit |
+| `Rate-limit trouble read warnings per partition` | Draft PR (section E) |
+| `Log when the trouble refresh pauses for programming mode` | Draft PR (section E) |
+| `Do not dump undecoded payloads of access code commands` | Draft PR (section E) |
+| `Update upstream PR draft E after review` | Fork only, never submit |
 
 Section C records why panic / fire / auxiliary activation (`ModuleControl_Activate_FAP`, 0x0908) is not proposed.
 Section D is a separate draft PR (command results, panel response codes, an 8 s bound on the panel's answer, partition ready state). It builds on section A.
@@ -381,16 +385,19 @@ Untested:
   6. `Re-read the trouble flag right after an arm is rejected with code 1`
   7. `Log undecoded panel notifications once per command word`
   8. `End a trouble refresh round when the panel does not answer`
+  9. `Rate-limit trouble read warnings per partition`
+  10. `Log when the trouble refresh pauses for programming mode`
+  11. `Do not dump undecoded payloads of access code commands`
 
-  Do not include PR #45 or the UPSTREAM_PRS.md commits.
+  Commits 9-11 came out of review and build on 1-8. Do not include PR #45 or the UPSTREAM_PRS.md commits.
 - **Dependency:** in a scratch clone, upstream `master` 61a1a0e plus section A's first commit, section D's eleven commits
-  and these eight cherry-pick with no conflicts. The solution builds with 14 warnings and 0 errors, the same warnings as
+  and these eleven cherry-pick with no conflicts. The solution builds with 14 warnings and 0 errors, the same warnings as
   61a1a0e (compared without line numbers), and the throwaway harness gives the same results there as on the fork.
 - **TLink is touched:** `SessionCommand` (public record) gains `bool LogFailuresAtDebug` (default false; `SessionMediator`
   then logs its failure lines at Debug instead of Warning or Error, same templates). `ConnectionSettings` gains
   `TroubleRefreshIntervalSeconds` (default 60). `ITv2Session` gains the undecoded-notification log lines. Nothing in TLink
   is renamed or removed. Say this in the PR.
-- **Independent parts:** commit 7 (log of undecoded notifications) stands on its own and could be a separate small PR.
+- **Independent parts:** commits 7 and 11 (log of undecoded notifications) stand on their own and could be a separate small PR.
 - **Not in this PR:** no message class or handler for `Notification_Partition_Trouble_Status` (0x023F),
   `ModuleStatus_Trouble_Detail` (0x0817) or `ModuleStatus_Trouble_Detail_Notification` (0x0823), and no `trouble_types`:
   their payload formats are not established. Commit 7 only logs what the panel sends.
@@ -429,8 +436,8 @@ WebSocket clients can now see whether the panel reports a trouble (for example A
 - Setting: `TroubleRefreshIntervalSeconds` in each connection's settings, on the Connections page next to the other per-connection settings. A settings file without the field loads with 60. 0 turns the periodic re-read and the re-read after an arm rejection off; a change applies within about 5 s, without a restart.
 - A session's worker starts once its connect-time configuration and status pull has finished (`SessionState.IsInitialized`); the first round runs one interval later. It stops when the session disconnects or the host shuts down; a reconnect gets a new worker after its own pull.
 - Only `TroublesPresent` is written. `Status`, `IsReady`, the exit delay fields and `LastUpdated` are left alone, so this does not change live `triggered` / `pending` handling or anything clients see today. `UpdatePartition` is called only when the flag changed, and the refresh never creates a session or partition entry.
-- One read at a time per session. A read is skipped while a `PanelCommandService` command (arm, disarm, bypass; a bypass counts as one operation from enter to exit) is in progress on that session, while the session's `ConfigLock` is held (configuration and user operations), and while the panel is in installer programming. The check runs before each partition.
-- Each read waits at most 8 s, as `PanelCommandService` does. When the panel does not answer, the rest of that round is skipped. A failed, refused or timed-out read, an answer for another partition and an answer without the second status byte keep the last value. The first failure after a success is a Warning, later ones are Debug, and `SessionMediator` logs them at Debug.
+- One read at a time per session. A read is skipped while a `PanelCommandService` command (arm, disarm, bypass; a bypass counts as one operation from enter to exit) is in progress on that session, while the session's `ConfigLock` is held (configuration and user operations), and while the panel reports programming mode (`SessionState.IsInProgrammingMode`, which also covers installer writes from the web UI that do not take `ConfigLock`). The check runs before each partition. A programming-mode pause logs one Information line when it starts and one when it ends, so a flag that never clears is visible.
+- Each read waits at most 8 s, as `PanelCommandService` does. When the panel does not answer, the rest of that round is skipped. A failed, refused or timed-out read, an answer for another partition and an answer without the second status byte keep the last value. Per partition, the first failure after a success is a Warning, later ones are Debug, and the next success logs "Trouble status reads of partition N work again"; `SessionMediator` logs these reads' failures at Debug.
 - The re-read after a code-1 arm rejection is queued by an event (`IPanelCommandService.ArmRejectedNotReady`) that `ArmAsync` raises after the command stopped counting as in progress. The command's result (`command_result`, the old `error` reply, the UI snackbar) does not wait for it. It is dropped when that partition is being read at that moment, and a periodic read of the partition also serves it.
 
 ## Undecoded panel notifications
@@ -442,13 +449,13 @@ Undecoded panel notification Notification_Partition_Trouble_Status (0x023F), 3 p
 Undecoded panel notification Notification_Partition_Trouble_Status (0x023F) payload: [01-00-01]
 ```
 
-The payload is the panel's own; nothing NeoHub sends, such as an access code, is part of it. Nothing is decoded or acted on.
+The payload is the panel's own. For command words of the access code and user code families and for `Connection_Request_Access`, whose payload may hold a code or key material, the Debug line gives only the length. Nothing is decoded or acted on.
 
 ## Changes
 
 - TLink `ITv2/MediatR/SessionCommand.cs`, `SessionMediator.cs`: `LogFailuresAtDebug`.
 - TLink `ITv2/ConnectionSettings.cs`: `TroubleRefreshIntervalSeconds` (`[Range(0, 86400)]`, default `DefaultTroubleRefreshIntervalSeconds` = 60).
-- TLink `ITv2/ITv2Session.cs`: `LogUndecodedNotification(s)`, a per-session set of command words already logged.
+- TLink `ITv2/ITv2Session.cs`: `LogUndecodedNotification(s)`, a per-session set of command words already logged, `MayCarrySecret`.
 - `Services/Models/PartitionState.cs`: `TroublesPresent`.
 - `Services/Handlers/PanelConfigurationHandler.cs`: the status pull sets `TroublesPresent`.
 - `Services/IPanelCommandService.cs`, `PanelCommandService.cs`: `IsCommandInProgress(sessionId)`, `ArmRejectedNotReady` event and its args; `PanelAnswerTimeout` is `internal` so the refresh uses the same bound.
@@ -462,7 +469,7 @@ The payload is the panel's own; nothing NeoHub sends, such as an access code, is
 - Additive. The replies to commands, with or without `request_id`, are unchanged byte for byte (other than section D's code-1 text). Clients that read `full_state` / `partition_update` strictly must accept the new `troubles` property.
 - Clients should use `troubles` only when `full_state` lists `partition_troubles`.
 - New traffic to the panel: one `ModulePartitionStatus` request per partition per interval (default 60 s), plus one after each arm rejected with code 1. These are the same requests the connect-time pull already sends.
-- New log lines at Information: a trouble flag change ("Partition 1 troubles present" / "cleared"), the first undecoded notification of each command word per session, and "Trouble status reads work again" after a failure.
+- New log lines at Information: a trouble flag change ("Partition 1 troubles present" / "cleared"), the first undecoded notification of each command word per session, "Trouble status reads of partition N work again" after a failure, and the start and end of a programming-mode pause.
 
 ## Test evidence
 
@@ -474,12 +481,13 @@ Offline only (no panel):
   - The connect pull sets `TroublesPresent`. With the interval at 1 s and the pull held for 3 s, no extra read is sent during the pull; the first round follows one interval after it.
   - Unchanged reads send nothing; a troubles-only change sends exactly one `partition_update`; a read whose answer has other status, ready, delay and alarm bits changes only `TroublesPresent` (status, ready, exit delay fields, name and `LastUpdated` compared before and after). A live arm notification is not undone by later reads.
   - No read is sent while an arm waits 8 s for the panel or during a bypass (enter, write, exit). A read the panel never answers ends after 8.0 s, is the only request meanwhile, ends the round, and does not delay a disarm sent during it or an arm sent after it.
-  - Transport failure, panel rejection, NACK, an answer for the other partition, a short answer and an exception keep the last value and give exactly one Warning (all categories counted) until a read succeeds; `SessionMediator` lines are Debug.
+  - Transport failure, panel rejection, NACK, an answer for the other partition, a short answer and an exception keep the last value and give exactly one Warning per failing partition (all categories counted) until a read of that partition succeeds; `SessionMediator` lines are Debug. With one partition failing every round and the other answering: one Warning, no recovery lines in between, one recovery line at the end.
+  - No read while the session's `ConfigLock` is held or while the panel reports programming mode (one Information line when the pause starts, one when it ends; a `ConfigLock` skip during the pause does not end it); reads resume afterwards.
   - Interval 0: no reads and no re-read after a code-1 rejection; changing it to 1 at runtime started the reads (first read 2.0 s after the change). A settings file without the field loads 60; 0 and 15 load as written.
   - Disconnect stops the reads; a reconnect starts a new worker after the new pull; `StopAsync` stops everything.
   - Code-1 arm: the `command_result` (or the old `error`) goes out at once; the single re-read follows 0.50 s later, then the `partition_update`. A re-read that hangs does not delay the reply. Disarm code 1 and arm code 17 trigger no re-read. A re-read requested while that partition is being read is dropped; one requested while another partition is being read runs once, 0.5 s after that read.
   - Never two reads at once on a session, and no read reached the panel while a command was outstanding there.
-  - Undecoded notifications: Information once per command word per session (pre-ready burst, normal notifications and `MultipleMessagePacket` sub-messages), Debug with the hex payload every time, nothing for typed messages or for a `DefaultMessage` that answers a pending request.
+  - Undecoded notifications: Information once per command word per session (pre-ready burst, normal notifications and `MultipleMessagePacket` sub-messages), Debug with the hex payload every time, nothing for typed messages or for a `DefaultMessage` that answers a pending request. `Notification_Access_Code_Length` with a dummy BCD code: length only, no payload, in these lines.
   - No dummy access code appears in any log line or frame.
 - A real NeoHub process (no panel), started with a settings file without the new field: it starts, `full_state` lists the three capabilities, the Connections page shows the interval as 60, and it shuts down cleanly.
 
@@ -492,7 +500,9 @@ Untested:
 
 - TLink `CommandRequestReceiver` matches a `ModulePartitionStatus` answer by type, not by partition, and a cancelled receiver stays registered until the next cleanup. If the panel answers the next request without acknowledging it first, the stale receiver takes that answer and the next read times out (seen with the receivers called through reflection; with an acknowledgement first, the new read gets its answer). The refresh checks the partition in the answer and ends the round after a timeout.
 - `ITv2Session._pendingReceivers` is a plain `List` that sends add to while the receive pump enumerates it; the re-reads add a few more sends to that pattern.
-- Commands from the Dev Console and other `SessionCommand` callers outside `PanelCommandService` are not tracked as in progress; they are only avoided while they hold `ConfigLock`.
+- Commands from the Dev Console and other `SessionCommand` callers outside `PanelCommandService` are not tracked as in progress; they are only avoided while they hold `ConfigLock` or the panel reports programming mode.
+- TLink's existing Debug line `RX detail: {Message}` still writes every property of each inbound message, including the payload of an undecoded message of the access code family (seen with a dummy code in the harness). It is not written at the default Information level.
+- An immediate re-read that finds a command in progress when it fires is skipped, not retried; the next periodic round reads the partition.
 ````
 
 ### Checklist for the owner before submitting
@@ -501,7 +511,7 @@ Untested:
 - [ ] Sections A and D are merged upstream, or submitted first.
 - [ ] Fetch upstream `master`. If it has moved past 61a1a0e, cherry-pick onto the new tip, resolve any conflicts and rebuild.
 - [ ] Use a dedicated branch for the PR (not the fork's working branch), so the PR #45 and UPSTREAM_PRS.md commits stay out.
-- [ ] Decide whether commit 7 goes in its own PR.
+- [ ] Decide whether commits 7 and 11 go in their own PR, and whether to squash commits 9-11 into 5 and 7.
 - [ ] Decide whether the `Co-Authored-By` / `Claude-Session` trailers stay in the commit messages sent upstream.
 - [ ] Do the local test with the owner present: unplug the panel's AC power (or wait for a real trouble) and watch `troubles` turn true within the interval and false after it clears; arm during the trouble with no zone open and note the response code; check the NeoHub log for "Undecoded panel notification" lines. Update "Test evidence" and "Untested".
 - [ ] Check the PR text, logs and screenshots for personal data: no names, addresses, panel or installer IDs, IP addresses, session IDs or access codes.
