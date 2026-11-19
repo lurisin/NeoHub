@@ -14,7 +14,8 @@ namespace NeoHub.Services
     /// The flag is otherwise only read by the status pull when the session connects. For each connected
     /// session, once that pull has finished (<see cref="SessionState.IsInitialized"/>), this service re-reads
     /// <see cref="ModulePartitionStatus"/> for the session's partitions every
-    /// <see cref="ConnectionSettings.TroubleRefreshIntervalSeconds"/> seconds (0 = off) and updates only
+    /// <see cref="ConnectionSettings.TroubleRefreshIntervalSeconds"/> seconds (0 = off, at least
+    /// <see cref="ConnectionSettings.MinimumTroubleRefreshIntervalSeconds"/> otherwise) and updates only
     /// <see cref="PartitionState.TroublesPresent"/> from it. Status, IsReady and the exit delay fields are never
     /// changed here. <see cref="IPanelStateService.UpdatePartition"/> is called only when the flag changes, so a
     /// read that finds no change sends nothing to clients.
@@ -38,6 +39,13 @@ namespace NeoHub.Services
         /// first, and the panel is not asked again in the same moment it rejected the command.
         /// </summary>
         internal static readonly TimeSpan ImmediateRefreshDelay = TimeSpan.FromMilliseconds(500);
+
+        /// <summary>
+        /// Shortest interval used: a setting from 1 to 9 s counts as this, so a read is not outstanding almost all
+        /// the time (a read takes about half a second per partition) and commands rarely overlap one.
+        /// Not readonly so tests can lower it.
+        /// </summary>
+        internal static int MinimumIntervalSeconds = ConnectionSettings.MinimumTroubleRefreshIntervalSeconds;
 
         private readonly IMediator _mediator;
         private readonly IPanelStateService _panelState;
@@ -493,9 +501,13 @@ namespace NeoHub.Services
                 _logger.LogInformation("Trouble status reads work again");
         }
 
-        private int GetIntervalSeconds(string sessionId) =>
-            _settings.CurrentValue.FindBySessionId(sessionId)?.TroubleRefreshIntervalSeconds
+        /// <summary>The interval in seconds: 0 when off, otherwise at least <see cref="MinimumIntervalSeconds"/>.</summary>
+        private int GetIntervalSeconds(string sessionId)
+        {
+            var seconds = _settings.CurrentValue.FindBySessionId(sessionId)?.TroubleRefreshIntervalSeconds
                 ?? ConnectionSettings.DefaultTroubleRefreshIntervalSeconds;
+            return seconds <= 0 ? 0 : Math.Max(seconds, MinimumIntervalSeconds);
+        }
 
         #endregion
 

@@ -136,14 +136,18 @@ public class ConnectionSettings
     /// <summary>Default for <see cref="TroubleRefreshIntervalSeconds"/>.</summary>
     public const int DefaultTroubleRefreshIntervalSeconds = 60;
 
+    /// <summary>Shortest interval used for <see cref="TroubleRefreshIntervalSeconds"/>; 1 to 9 count as this.</summary>
+    public const int MinimumTroubleRefreshIntervalSeconds = 10;
+
     /// <summary>
     /// Seconds between re-reads of the partition status while the panel is connected, used to keep the
     /// partition trouble flag current. 0 turns the re-reads off; the flag is then only read on connect.
-    /// Settings saved before this option existed load with the default.
+    /// Values from 1 to 9 are used as <see cref="MinimumTroubleRefreshIntervalSeconds"/>, so the panel is not
+    /// asked almost continuously. Settings saved before this option existed load with the default.
     /// </summary>
     [Display(
         Name = "Trouble Refresh Interval",
-        Description = "Seconds between partition trouble status re-reads (0 = off)",
+        Description = "Seconds between partition trouble status re-reads (0 = off, minimum 10)",
         Order = 11)]
     [Range(0, 86400)]
     public int TroubleRefreshIntervalSeconds { get; set; } = DefaultTroubleRefreshIntervalSeconds;
