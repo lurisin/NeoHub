@@ -32,10 +32,11 @@ namespace DSC.TLink.ITv2.MediatR
             SessionCommand request,
             CancellationToken cancellationToken)
         {
+            var failureLevel = request.LogFailuresAtDebug ? LogLevel.Debug : LogLevel.Warning;
             var session = _sessionManager.GetSession(request.SessionID);
             if (session == null)
             {
-                _logger.LogWarning("Command failed - session not found");
+                _logger.Log(failureLevel, "Command failed - session not found");
                 return new SessionResponse
                 {
                     Success = false,
@@ -60,7 +61,7 @@ namespace DSC.TLink.ITv2.MediatR
 
                 if (result.Value is CommandResponse { ResponseCode: not CommandResponseCode.Success } errorResponse)
                 {
-                    _logger.LogWarning("Panel rejected command: [{Code}] {Description}",
+                    _logger.Log(failureLevel, "Panel rejected command: [{Code}] {Description}",
                         errorResponse.ResponseCode, errorResponse.ResponseCode.Description());
 
                     return new SessionResponse
@@ -73,7 +74,7 @@ namespace DSC.TLink.ITv2.MediatR
 
                 if (result.Value is CommandError nack)
                 {
-                    _logger.LogWarning("Panel interface refused command {Command}: NACK {NackCode}",
+                    _logger.Log(failureLevel, "Panel interface refused command {Command}: NACK {NackCode}",
                         nack.NackCommand, nack.NackCode);
 
                     // Still reported as success, as before, so existing callers behave the same;
@@ -94,7 +95,7 @@ namespace DSC.TLink.ITv2.MediatR
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error handling command");
+                _logger.Log(request.LogFailuresAtDebug ? LogLevel.Debug : LogLevel.Error, ex, "Error handling command");
                 return new SessionResponse
                 {
                     Success = false,
