@@ -258,6 +258,7 @@ namespace NeoHub.Services
                     if (nextRoundAt is long due && now >= due)
                     {
                         await RunRoundAsync(worker, ct);
+                        worker.LoopErrorReported = false;
                         nextRoundAt = Environment.TickCount64 + intervalMs;
                         continue;
                     }
@@ -288,8 +289,13 @@ namespace NeoHub.Services
                 }
                 catch (Exception ex)
                 {
-                    // Never let the loop die; try again after a pause.
-                    _logger.LogDebug(ex, "Trouble refresh error for session {SessionId}", worker.SessionId);
+                    // Never let the loop die; try again after a pause. The first error is a Warning, so a
+                    // persistent one is visible at the default level; then Debug until a round completes.
+                    if (worker.LoopErrorReported)
+                        _logger.LogDebug(ex, "Trouble refresh error for session {SessionId}", worker.SessionId);
+                    else
+                        _logger.LogWarning(ex, "Trouble refresh error for session {SessionId}; further errors are logged at Debug until a refresh round completes", worker.SessionId);
+                    worker.LoopErrorReported = true;
                     try { await Task.Delay(SettingsRecheckInterval, ct); }
                     catch (OperationCanceledException) { break; }
                 }
@@ -567,6 +573,9 @@ namespace NeoHub.Services
             /// stops being empty, so a partition that keeps failing does not warn again each time another one succeeds.
             /// </summary>
             public HashSet<byte> FailingPartitions { get; } = new();
+
+            /// <summary>An unexpected loop error was logged at Warning since the last completed round (loop only).</summary>
+            public bool LoopErrorReported { get; set; }
 
             /// <summary>Reads are being skipped because of programming mode (guarded by <see cref="Gate"/>).</summary>
             public bool PausedForProgramming { get; set; }
