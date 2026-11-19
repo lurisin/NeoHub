@@ -67,6 +67,10 @@ internal sealed class ITv2Session : IITv2Session
     private readonly TaskCompletionSource _sessionReady = new();
     private Timer? _readyTimer;
 
+    // Command words of undecoded panel notifications already logged at Information on this session.
+    // Only touched by the receive pump.
+    private readonly HashSet<ITv2Command> _reportedUndecodedCommands = new();
+
     private ITv2Session(
         ITLinkTransport transport,
         IConnectionSettingsProvider settingsProvider,
@@ -289,7 +293,10 @@ internal sealed class ITv2Session : IITv2Session
                 if (!_sessionReady.Task.IsCompleted)
                 {
                     if (packet.Message is not SimpleAck)
+                    {
+                        LogUndecodedNotifications(packet.Message);
                         _logger.LogDebug("Discarding pre-ready notification: {MessageType}", packet.Message.GetType().Name);
+                    }
                     continue;
                 }
 
@@ -332,15 +339,56 @@ internal sealed class ITv2Session : IITv2Session
                     continue;
                 }
 
+                LogUndecodedNotification(subMessage);
                 _logger.LogDebug("Publishing notification: {MessageType}", subMessage.GetType().Name);
                 await _notificationChannel.Writer.WriteAsync(subMessage, ct);
             }
         }
         else
         {
+            LogUndecodedNotification(packet.Message);
             _logger.LogDebug("Publishing notification: {MessageType}", packet.Message.GetType().Name);
             await _notificationChannel.Writer.WriteAsync(packet.Message, ct);
         }
+    }
+
+    private void LogUndecodedNotifications(IMessageData message)
+    {
+        if (message is MultipleMessagePacket multiMsg)
+        {
+            foreach (var subMessage in multiMsg.Messages)
+                LogUndecodedNotification(subMessage);
+        }
+        else
+        {
+            LogUndecodedNotification(message);
+        }
+    }
+
+    /// <summary>
+    /// Logs a panel notification that NeoHub cannot decode (it arrived as <see cref="DefaultMessage"/> and was not
+    /// the answer to a request): at Information once per command word per session, with its payload length, and
+    /// at Debug every time, with the payload in hex. This shows what the panel sends, for example when a trouble
+    /// occurs, without a Debug log level. The payload comes from the panel; nothing sent by NeoHub, such as an
+    /// access code, is logged here.
+    /// </summary>
+    private void LogUndecodedNotification(IMessageData message)
+    {
+        if (message is not DefaultMessage undecoded)
+            return;
+
+        var command = undecoded.Command;
+        var name = Enum.IsDefined(command) ? command.ToString() : "unknown command";
+        var word = (ushort)command;
+
+        if (_reportedUndecodedCommands.Add(command))
+            _logger.LogInformation(
+                "Undecoded panel notification {Command} (0x{CommandWord:X4}), {Length} payload bytes; later ones with this command word are logged at Debug only",
+                name, word, undecoded.Data.Length);
+
+        _logger.LogDebug("Undecoded panel notification {Command} (0x{CommandWord:X4}) payload: {Payload}{Detail}",
+            name, word, new HexBytes(undecoded.Data),
+            undecoded.DeserializationError is null ? "" : $" ({undecoded.DeserializationError})");
     }
 
     private void CleanupCompletedReceivers()
