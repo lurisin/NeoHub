@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using DSC.TLink.ITv2;
 using DSC.TLink.ITv2.Enumerations;
 using DSC.TLink.ITv2.MediatR;
@@ -27,11 +28,43 @@ namespace NeoHub.Services
         private ConnectionSettings? GetConnection(string sessionId) =>
             _connectionSettings.CurrentValue.FindBySessionId(sessionId);
 
+        /// <summary>Number of ArmAsync / DisarmAsync / BypassZoneAsync calls running, per session.</summary>
+        private readonly ConcurrentDictionary<string, int> _commandsInProgress = new(StringComparer.OrdinalIgnoreCase);
+
+        public bool IsCommandInProgress(string sessionId) =>
+            _commandsInProgress.TryGetValue(sessionId ?? string.Empty, out var count) && count > 0;
+
+        /// <summary>
+        /// Counts one public command operation as in progress until disposed. A bypass (enter, write, exit)
+        /// counts as one operation, so background reads see no gap between its steps.
+        /// </summary>
+        private CommandInProgress TrackCommand(string sessionId)
+        {
+            var key = sessionId ?? string.Empty;
+            _commandsInProgress.AddOrUpdate(key, 1, (_, count) => count + 1);
+            return new CommandInProgress(_commandsInProgress, key);
+        }
+
+        private readonly struct CommandInProgress : IDisposable
+        {
+            private readonly ConcurrentDictionary<string, int> _counts;
+            private readonly string _key;
+
+            public CommandInProgress(ConcurrentDictionary<string, int> counts, string key)
+            {
+                _counts = counts;
+                _key = key;
+            }
+
+            public void Dispose() => _counts.AddOrUpdate(_key, 0, (_, count) => Math.Max(0, count - 1));
+        }
+
         private const int NotReadyToArmResponseCode = 1;
         private const string NotReadyToArmMessage = "Partition not ready to arm";
 
         public async Task<PanelCommandResult> ArmAsync(string sessionId, byte partition, ArmingMode mode, string? accessCode = null)
         {
+            using var inProgress = TrackCommand(sessionId);
             var conn = GetConnection(sessionId);
             var code = accessCode ?? conn?.DefaultAccessCode ?? string.Empty;
 
@@ -60,6 +93,7 @@ namespace NeoHub.Services
 
         public async Task<PanelCommandResult> DisarmAsync(string sessionId, byte partition, string? accessCode = null)
         {
+            using var inProgress = TrackCommand(sessionId);
             var conn = GetConnection(sessionId);
             var code = accessCode ?? conn?.DefaultAccessCode;
 
@@ -83,6 +117,7 @@ namespace NeoHub.Services
 
         public async Task<PanelCommandResult> BypassZoneAsync(string sessionId, byte partition, byte zoneNumber, bool bypass, string? accessCode = null)
         {
+            using var inProgress = TrackCommand(sessionId);
             var conn = GetConnection(sessionId);
             var code = accessCode ?? conn?.DefaultAccessCode;
 

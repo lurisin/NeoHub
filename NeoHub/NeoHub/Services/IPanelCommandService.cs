@@ -12,6 +12,13 @@ namespace NeoHub.Services
         Task<PanelCommandResult> ArmAsync(string sessionId, byte partition, ArmingMode mode, string? accessCode = null);
         Task<PanelCommandResult> DisarmAsync(string sessionId, byte partition, string? accessCode = null);
         Task<PanelCommandResult> BypassZoneAsync(string sessionId, byte partition, byte zoneNumber, bool bypass, string? accessCode = null);
+
+        /// <summary>
+        /// True while an <see cref="ArmAsync"/>, <see cref="DisarmAsync"/> or <see cref="BypassZoneAsync"/> call
+        /// for this session is running (from the call until it returns, including the wait for the panel).
+        /// Background reads use it to stay out of the way of commands.
+        /// </summary>
+        bool IsCommandInProgress(string sessionId);
     }
 
     public record PanelCommandResult
