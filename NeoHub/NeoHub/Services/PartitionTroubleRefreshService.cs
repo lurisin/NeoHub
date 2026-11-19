@@ -23,7 +23,8 @@ namespace NeoHub.Services
     /// After an arm command is rejected with response code 1 (not ready to arm), the rejected partition is also
     /// read shortly afterwards (<see cref="ImmediateRefreshDelay"/>), in the background, so the command's result
     /// is not delayed. That read is skipped when the interval is 0, and is dropped if the partition is being
-    /// read at that moment.
+    /// read at that moment. If a command is waiting for the panel when it is due, it is tried again every
+    /// <see cref="ImmediateRefreshDelay"/> until the command has finished.
     ///
     /// Reads are sent one at a time per session, are skipped while a <see cref="IPanelCommandService"/> command,
     /// a configuration operation or installer programming is in progress on that session, and wait at most as
@@ -264,11 +265,16 @@ namespace NeoHub.Services
                     var waitMs = nextRoundAt is long next
                         ? Math.Min(next - now, (long)SettingsRecheckInterval.TotalMilliseconds)
                         : (long)SettingsRecheckInterval.TotalMilliseconds;
+                    var retryPending = intervalMs > 0 && worker.HasPending();
+                    if (retryPending)
+                        waitMs = Math.Min(waitMs, (long)ImmediateRefreshDelay.TotalMilliseconds);
                     var woken = await worker.Signal.WaitAsync(TimeSpan.FromMilliseconds(Math.Max(1, waitMs)), ct);
-                    if (woken && intervalMs > 0)
+                    if (intervalMs > 0 && (woken || retryPending))
                     {
-                        // Re-read requested after an arm rejection; the periodic schedule is not moved.
-                        await Task.Delay(ImmediateRefreshDelay, ct);
+                        // Re-read requested after an arm rejection, or one that waited for a command to finish;
+                        // the periodic schedule is not moved.
+                        if (woken)
+                            await Task.Delay(ImmediateRefreshDelay, ct);
                         foreach (var partition in worker.TakePending())
                         {
                             if (!await RefreshPartitionAsync(worker, partition, ct))
@@ -321,25 +327,34 @@ namespace NeoHub.Services
         /// <summary>Reads and applies one partition's trouble flag. Returns false when the panel did not answer in time.</summary>
         private async Task<bool> RefreshPartitionAsync(SessionWorker worker, byte partition, CancellationToken ct)
         {
+            // Checked before each partition, so a command that starts during a round skips the rest of it.
+            var canRead = CanRead(worker, out var reason);
+            if (canRead || reason == ProgrammingModeReason)
+                ReportProgrammingPause(worker, pausedNow: !canRead);
+            if (!canRead)
+            {
+                if (reason != CommandWaitingReason)
+                {
+                    // Configuration and programming can last minutes: the next periodic round covers a re-read
+                    // requested meanwhile. A command ends within its own timeout, so that re-read is kept and
+                    // tried again shortly.
+                    lock (worker.Gate)
+                        worker.Pending.Remove(partition);
+                }
+                _logger.LogDebug("Trouble refresh of partition {Partition} skipped: {Reason}", partition, reason);
+                return true;
+            }
+
             lock (worker.Gate)
             {
-                // This read also serves a re-read requested for the same partition.
+                // This read also serves a re-read requested for the same partition. Reading is set only for a
+                // read that is sent, so a re-read requested meanwhile is coalesced with a real read only.
                 worker.Pending.Remove(partition);
                 worker.Reading = partition;
             }
 
             try
             {
-                // Checked before each partition, so a command that starts during a round skips the rest of it.
-                var canRead = CanRead(worker, out var reason);
-                if (canRead || reason == ProgrammingModeReason)
-                    ReportProgrammingPause(worker, pausedNow: !canRead);
-                if (!canRead)
-                {
-                    _logger.LogDebug("Trouble refresh of partition {Partition} skipped: {Reason}", partition, reason);
-                    return true;
-                }
-
                 var (troubles, error, noAnswer) = await ReadTroublesAsync(worker.SessionId, partition, ct);
                 if (troubles is not bool present)
                 {
@@ -370,7 +385,7 @@ namespace NeoHub.Services
             else if (session.IsInProgrammingMode)
                 reason = ProgrammingModeReason;
             else if (_commands.IsCommandInProgress(worker.SessionId))
-                reason = "command waiting for the panel";
+                reason = CommandWaitingReason;
             else
             {
                 reason = string.Empty;
@@ -380,6 +395,7 @@ namespace NeoHub.Services
         }
 
         private const string ProgrammingModeReason = "panel in programming mode";
+        private const string CommandWaitingReason = "command waiting for the panel";
 
         /// <summary>
         /// Logs at Information when reads start and stop being skipped because the panel reports programming mode
@@ -554,6 +570,12 @@ namespace NeoHub.Services
                 try { Signal.Release(); }
                 catch (SemaphoreFullException) { }   // a wake-up is already pending
                 catch (ObjectDisposedException) { }
+            }
+
+            public bool HasPending()
+            {
+                lock (Gate)
+                    return Pending.Count > 0;
             }
 
             public byte[] TakePending()
