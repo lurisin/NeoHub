@@ -19,6 +19,11 @@ namespace NeoHub.Services
     /// changed here. <see cref="IPanelStateService.UpdatePartition"/> is called only when the flag changes, so a
     /// read that finds no change sends nothing to clients.
     ///
+    /// After an arm command is rejected with response code 1 (not ready to arm), the rejected partition is also
+    /// read shortly afterwards (<see cref="ImmediateRefreshDelay"/>), in the background, so the command's result
+    /// is not delayed. That read is skipped when the interval is 0, and is dropped if the partition is being
+    /// read at that moment.
+    ///
     /// Reads are sent one at a time per session, are skipped while a <see cref="IPanelCommandService"/> command,
     /// a configuration operation or installer programming is in progress on that session, and wait at most as
     /// long as <see cref="PanelCommandService"/> does for the panel. A failed read keeps the last value.
@@ -27,6 +32,12 @@ namespace NeoHub.Services
     {
         /// <summary>Longest time between two checks of the interval setting, so a change applies without a restart.</summary>
         private static readonly TimeSpan SettingsRecheckInterval = TimeSpan.FromSeconds(5);
+
+        /// <summary>
+        /// Pause between an arm rejection with code 1 and the re-read it triggers: the command's result goes out
+        /// first, and the panel is not asked again in the same moment it rejected the command.
+        /// </summary>
+        internal static readonly TimeSpan ImmediateRefreshDelay = TimeSpan.FromMilliseconds(500);
 
         private readonly IMediator _mediator;
         private readonly IPanelStateService _panelState;
@@ -59,6 +70,7 @@ namespace NeoHub.Services
 
             _panelState.SessionStateChanged += OnSessionStateChanged;
             _sessionMonitor.SessionsChanged += OnSessionsChanged;
+            _commands.ArmRejectedNotReady += OnArmRejectedNotReady;
         }
 
         #region Lifecycle
@@ -101,6 +113,7 @@ namespace NeoHub.Services
         {
             _panelState.SessionStateChanged -= OnSessionStateChanged;
             _sessionMonitor.SessionsChanged -= OnSessionsChanged;
+            _commands.ArmRejectedNotReady -= OnArmRejectedNotReady;
 
             lock (_lock)
             {
@@ -138,6 +151,39 @@ namespace NeoHub.Services
                 worker.Cancel();
                 _logger.LogDebug("Trouble refresh stopped for session {SessionId}", worker.SessionId);
             }
+        }
+
+        private void OnArmRejectedNotReady(object? sender, ArmRejectedNotReadyEventArgs e)
+        {
+            SessionWorker? worker;
+            lock (_lock)
+                _workers.TryGetValue(e.SessionId ?? string.Empty, out worker);
+
+            if (worker is null)
+            {
+                _logger.LogDebug("No trouble re-read after the arm rejection: session {SessionId} has no refresh running", e.SessionId);
+                return;
+            }
+
+            if (GetIntervalSeconds(worker.SessionId) <= 0)
+            {
+                _logger.LogDebug("No trouble re-read after the arm rejection: trouble refresh is off");
+                return;
+            }
+
+            lock (worker.Gate)
+            {
+                if (worker.Reading == e.Partition)
+                {
+                    // Coalesced with the read already running for this partition.
+                    _logger.LogDebug("Partition {Partition} trouble status is being read already", e.Partition);
+                    return;
+                }
+                worker.Pending.Add(e.Partition);
+            }
+
+            _logger.LogDebug("Trouble re-read of partition {Partition} queued after an arm rejection with code 1", e.Partition);
+            worker.Wake();
         }
 
         /// <summary>Starts the worker for a session whose connect-time pull has finished, once per session state.</summary>
@@ -186,7 +232,10 @@ namespace NeoHub.Services
                     var now = Environment.TickCount64;
 
                     if (intervalMs <= 0)
+                    {
                         nextRoundAt = null;
+                        worker.ClearPending();
+                    }
                     else if (nextRoundAt is null || nextRoundAt > now + intervalMs)
                         nextRoundAt = now + intervalMs;   // first round one interval after the connect-time pull
 
@@ -200,7 +249,14 @@ namespace NeoHub.Services
                     var waitMs = nextRoundAt is long next
                         ? Math.Min(next - now, (long)SettingsRecheckInterval.TotalMilliseconds)
                         : (long)SettingsRecheckInterval.TotalMilliseconds;
-                    await Task.Delay(TimeSpan.FromMilliseconds(Math.Max(1, waitMs)), ct);
+                    var woken = await worker.Signal.WaitAsync(TimeSpan.FromMilliseconds(Math.Max(1, waitMs)), ct);
+                    if (woken && intervalMs > 0)
+                    {
+                        // Re-read requested after an arm rejection; the periodic schedule is not moved.
+                        await Task.Delay(ImmediateRefreshDelay, ct);
+                        foreach (var partition in worker.TakePending())
+                            await RefreshPartitionAsync(worker, partition, ct);
+                    }
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
@@ -238,22 +294,37 @@ namespace NeoHub.Services
 
         private async Task RefreshPartitionAsync(SessionWorker worker, byte partition, CancellationToken ct)
         {
-            // Checked before each partition, so a command that starts during a round skips the rest of it.
-            if (!CanRead(worker, out var reason))
+            lock (worker.Gate)
             {
-                _logger.LogDebug("Trouble refresh of partition {Partition} skipped: {Reason}", partition, reason);
-                return;
+                // This read also serves a re-read requested for the same partition.
+                worker.Pending.Remove(partition);
+                worker.Reading = partition;
             }
 
-            var (troubles, error) = await ReadTroublesAsync(worker.SessionId, partition, ct);
-            if (troubles is not bool present)
+            try
             {
-                ReportFailure(worker, partition, error!);
-                return;
-            }
+                // Checked before each partition, so a command that starts during a round skips the rest of it.
+                if (!CanRead(worker, out var reason))
+                {
+                    _logger.LogDebug("Trouble refresh of partition {Partition} skipped: {Reason}", partition, reason);
+                    return;
+                }
 
-            ReportSuccess(worker);
-            ApplyTroubles(worker, partition, present);
+                var (troubles, error) = await ReadTroublesAsync(worker.SessionId, partition, ct);
+                if (troubles is not bool present)
+                {
+                    ReportFailure(worker, partition, error!);
+                    return;
+                }
+
+                ReportSuccess(worker);
+                ApplyTroubles(worker, partition, present);
+            }
+            finally
+            {
+                lock (worker.Gate)
+                    worker.Reading = null;
+            }
         }
 
         private bool CanRead(SessionWorker worker, out string reason)
@@ -396,6 +467,34 @@ namespace NeoHub.Services
             public Task Completion { get; set; } = Task.CompletedTask;
             public object Gate { get; } = new();
             public bool FailureWarned { get; set; }
+
+            /// <summary>Partition being read right now, if any (guarded by <see cref="Gate"/>).</summary>
+            public byte? Reading { get; set; }
+
+            /// <summary>Partitions to re-read after an arm rejection (guarded by <see cref="Gate"/>).</summary>
+            public HashSet<byte> Pending { get; } = new();
+
+            /// <summary>Released to wake the worker for a pending re-read; holds at most one wake-up.</summary>
+            public SemaphoreSlim Signal { get; } = new(0, 1);
+
+            public void Wake()
+            {
+                try { Signal.Release(); }
+                catch (SemaphoreFullException) { }   // a wake-up is already pending
+                catch (ObjectDisposedException) { }
+            }
+
+            public byte[] TakePending()
+            {
+                lock (Gate)
+                    return Pending.OrderBy(p => p).ToArray();
+            }
+
+            public void ClearPending()
+            {
+                lock (Gate)
+                    Pending.Clear();
+            }
 
             public void Cancel()
             {

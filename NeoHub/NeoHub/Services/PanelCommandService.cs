@@ -62,9 +62,36 @@ namespace NeoHub.Services
         private const int NotReadyToArmResponseCode = 1;
         private const string NotReadyToArmMessage = "Partition not ready to arm";
 
+        public event EventHandler<ArmRejectedNotReadyEventArgs>? ArmRejectedNotReady;
+
         public async Task<PanelCommandResult> ArmAsync(string sessionId, byte partition, ArmingMode mode, string? accessCode = null)
         {
-            using var inProgress = TrackCommand(sessionId);
+            PanelCommandResult result;
+            using (TrackCommand(sessionId))
+                result = await ArmCoreAsync(sessionId, partition, mode, accessCode);
+
+            // Raised once the command no longer counts as in progress, so a read it triggers is not skipped
+            // because of this command. Handlers only queue work; the result is returned right away.
+            if (result.PanelResponseCode == NotReadyToArmResponseCode)
+                RaiseArmRejectedNotReady(sessionId, partition);
+
+            return result;
+        }
+
+        private void RaiseArmRejectedNotReady(string sessionId, byte partition)
+        {
+            try
+            {
+                ArmRejectedNotReady?.Invoke(this, new ArmRejectedNotReadyEventArgs { SessionId = sessionId, Partition = partition });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error in an arm rejection handler");
+            }
+        }
+
+        private async Task<PanelCommandResult> ArmCoreAsync(string sessionId, byte partition, ArmingMode mode, string? accessCode)
+        {
             var conn = GetConnection(sessionId);
             var code = accessCode ?? conn?.DefaultAccessCode ?? string.Empty;
 

@@ -19,6 +19,18 @@ namespace NeoHub.Services
         /// Background reads use it to stay out of the way of commands.
         /// </summary>
         bool IsCommandInProgress(string sessionId);
+
+        /// <summary>
+        /// Raised when <see cref="ArmAsync"/> was rejected by the panel with response code 1 (not ready to arm),
+        /// after the command stopped counting as in progress and before ArmAsync returns. Handlers must not block.
+        /// </summary>
+        event EventHandler<ArmRejectedNotReadyEventArgs>? ArmRejectedNotReady;
+    }
+
+    public class ArmRejectedNotReadyEventArgs : EventArgs
+    {
+        public required string SessionId { get; init; }
+        public required byte Partition { get; init; }
     }
 
     public record PanelCommandResult
