@@ -400,6 +400,10 @@ namespace NeoHub.Services
             else if (!ReferenceEquals(session, worker.State) || !session.IsInitialized)
                 reason = "connect-time status pull not finished";
             else if (session.ConfigLock.CurrentCount == 0)
+                // Keep this check even though IsInitialized is checked above: the connect-time pull holds
+                // ConfigLock, and its finally block sets IsInitialized by session id. After a disconnect during
+                // the pull, or a fast reconnect while the old pull unwinds, a state can be marked initialised
+                // while the new pull is still running; this check keeps the reads out of that pull.
                 reason = "configuration operation in progress";
             else if (session.IsInProgrammingMode)
                 reason = ProgrammingModeReason;
