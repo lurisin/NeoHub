@@ -397,13 +397,29 @@ internal sealed class ITv2Session : IITv2Session
     }
 
     /// <summary>
-    /// Command words whose payload may hold an access code or key material (access and user code reads, writes
-    /// and notifications, and the request-access handshake). Their undecoded payload is not dumped.
+    /// Parts of command word names whose payload may hold an access code or key material: access and user code
+    /// reads, writes and notifications; the request-access handshake; commands that carry a code to the panel
+    /// (access level and configuration entry, arm and disarm control); installer section reads and writes
+    /// (installer and master codes); virtual keypad keys and display; and the wrapper commands that can carry any
+    /// of these. Their undecoded payload is not dumped.
     /// </summary>
+    private static readonly string[] SecretCommandNameParts =
+    {
+        "Access_Code",
+        "User_Code",
+        "Request_Access",
+        "AccessLevel_Enter",
+        "Configuration_Enter",
+        "Installers_Section",
+        "Partition_Arm_Control",
+        "Partition_Disarm_Control",
+        "VirtualKeypad_",
+        "Connection_Pass_Through",
+        "Connection_Encapsulated_Command",
+    };
+
     private static bool MayCarrySecret(string commandName) =>
-        commandName.Contains("Access_Code", StringComparison.Ordinal)
-        || commandName.Contains("User_Code", StringComparison.Ordinal)
-        || commandName.Contains("Request_Access", StringComparison.Ordinal);
+        SecretCommandNameParts.Any(part => commandName.Contains(part, StringComparison.Ordinal));
 
     /// <summary>Offers an inbound message to the pending receivers; on a match, drops the completed ones.</summary>
     private bool RouteToPendingReceiver(Func<IMessageReceiver, bool> tryReceive)
