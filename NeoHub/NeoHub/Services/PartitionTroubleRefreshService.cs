@@ -171,6 +171,13 @@ namespace NeoHub.Services
                 return;
             }
 
+            if (_panelState.GetPartition(worker.SessionId, e.Partition) is null)
+            {
+                // Nothing to update, and a failed read of it would only keep the failure state set.
+                _logger.LogDebug("No trouble re-read after the arm rejection: partition {Partition} is not known", e.Partition);
+                return;
+            }
+
             lock (worker.Gate)
             {
                 if (worker.Reading == e.Partition)
@@ -287,6 +294,9 @@ namespace NeoHub.Services
                 // The partition dictionary changed while it was copied; the next round reads it again.
                 return;
             }
+
+            lock (worker.Gate)
+                worker.FailingPartitions.IntersectWith(partitions);   // forget partitions that are gone
 
             foreach (var partition in partitions)
             {
@@ -452,15 +462,22 @@ namespace NeoHub.Services
             _panelState.UpdatePartition(worker.SessionId, state);
         }
 
+        /// <summary>
+        /// One Warning per session while reads keep failing: logged when the first partition starts failing, then
+        /// Debug until every failing partition has been read successfully again.
+        /// </summary>
         private void ReportFailure(SessionWorker worker, byte partition, string error)
         {
             bool warn;
             lock (worker.Gate)
-                warn = worker.WarnedPartitions.Add(partition);
+            {
+                warn = worker.FailingPartitions.Count == 0;
+                worker.FailingPartitions.Add(partition);
+            }
 
             if (warn)
                 _logger.LogWarning(
-                    "Could not read the trouble status of partition {Partition}: {Error}. Keeping the last value; further failures of this partition are logged at Debug until a read succeeds",
+                    "Could not read the trouble status of partition {Partition}: {Error}. Keeping the last value; further failures are logged at Debug until the reads work again",
                     partition, error);
             else
                 _logger.LogDebug("Could not read the trouble status of partition {Partition}: {Error}", partition, error);
@@ -470,10 +487,10 @@ namespace NeoHub.Services
         {
             bool recovered;
             lock (worker.Gate)
-                recovered = worker.WarnedPartitions.Remove(partition);
+                recovered = worker.FailingPartitions.Remove(partition) && worker.FailingPartitions.Count == 0;
 
             if (recovered)
-                _logger.LogInformation("Trouble status reads of partition {Partition} work again", partition);
+                _logger.LogInformation("Trouble status reads work again");
         }
 
         private int GetIntervalSeconds(string sessionId) =>
@@ -503,10 +520,10 @@ namespace NeoHub.Services
             public object Gate { get; } = new();
 
             /// <summary>
-            /// Partitions whose last read failed and was already reported as a Warning (guarded by <see cref="Gate"/>).
-            /// Per partition, so one partition that keeps failing does not warn again each time another one succeeds.
+            /// Partitions whose last read failed (guarded by <see cref="Gate"/>). A Warning is logged when this set
+            /// stops being empty, so a partition that keeps failing does not warn again each time another one succeeds.
             /// </summary>
-            public HashSet<byte> WarnedPartitions { get; } = new();
+            public HashSet<byte> FailingPartitions { get; } = new();
 
             /// <summary>Reads are being skipped because of programming mode (guarded by <see cref="Gate"/>).</summary>
             public bool PausedForProgramming { get; set; }
