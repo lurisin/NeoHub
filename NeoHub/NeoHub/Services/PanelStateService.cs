@@ -77,6 +77,22 @@ namespace NeoHub.Services
         {
             var session = GetOrCreateSession(sessionId);
             session.Partitions[partition.PartitionNumber] = partition;
+            PublishPartitionUpdate(sessionId, session, partition);
+        }
+
+        public bool TryUpdatePartition(string sessionId, PartitionState partition)
+        {
+            if (!_sessions.TryGetValue(sessionId, out var session)
+                || !session.Partitions.TryGetValue(partition.PartitionNumber, out var stored)
+                || !ReferenceEquals(stored, partition))
+                return false;
+
+            PublishPartitionUpdate(sessionId, session, partition);
+            return true;
+        }
+
+        private void PublishPartitionUpdate(string sessionId, SessionState session, PartitionState partition)
+        {
             session.LastUpdated = DateTime.UtcNow;
             session.LastMessageAt = DateTime.UtcNow;
 

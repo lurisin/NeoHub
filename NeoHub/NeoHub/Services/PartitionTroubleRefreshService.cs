@@ -469,7 +469,7 @@ namespace NeoHub.Services
         private static readonly string NoAnswerText =
             $"no answer within {PanelCommandService.PanelAnswerTimeout.TotalSeconds:0} s";
 
-        /// <summary>Sets only TroublesPresent, and only broadcasts (through UpdatePartition) when it changed.</summary>
+        /// <summary>Sets only TroublesPresent, and only broadcasts (through TryUpdatePartition) when it changed.</summary>
         private void ApplyTroubles(SessionWorker worker, byte partition, bool troubles)
         {
             // Re-check after the await: never create a session or partition from here.
@@ -481,9 +481,11 @@ namespace NeoHub.Services
                 return;
 
             state.TroublesPresent = troubles;
+            // TryUpdatePartition does not recreate the session if it is removed (disconnect) right now.
+            if (!_panelState.TryUpdatePartition(worker.SessionId, state))
+                return;
             _logger.LogInformation("Partition {Partition} troubles {Troubles}",
                 partition, troubles ? "present" : "cleared");
-            _panelState.UpdatePartition(worker.SessionId, state);
         }
 
         /// <summary>

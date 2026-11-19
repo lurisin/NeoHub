@@ -15,6 +15,10 @@ namespace NeoHub.Services
         IReadOnlyDictionary<byte, PartitionState> GetPartitions(string sessionId);
         void UpdatePartition(string sessionId, PartitionState partition);
 
+        // Announces a change made in place to a partition entry that is still stored for the session;
+        // returns false, and creates nothing, when the session or that entry is gone or was replaced.
+        bool TryUpdatePartition(string sessionId, PartitionState partition);
+
         // Zone operations (zone belongs to session, not partition)
         ZoneState? GetZone(string sessionId, byte zoneNumber);
         IReadOnlyDictionary<byte, ZoneState> GetZones(string sessionId);
