@@ -75,6 +75,7 @@ namespace NeoHub
             builder.Services.AddSingleton<IPanelAccessCodeService, PanelAccessCodeService>();
             builder.Services.AddSingleton<ISessionMonitor, SessionMonitor>();
             builder.Services.AddSingleton<IConnectionSettingsProvider, ConnectionSettingsProvider>();
+            builder.Services.AddHostedService<PartitionTroubleRefreshService>();
 
             // WebSocket API
             builder.Services.AddSingleton<PanelWebSocketHandler>();

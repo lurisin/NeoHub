@@ -177,7 +177,7 @@ namespace NeoHub.Services
         /// Longest wait for the panel's answer to one command sent by this service. The TLink receivers
         /// have no timeout of their own, so without this bound an unanswered command would wait forever.
         /// </summary>
-        private static readonly TimeSpan PanelAnswerTimeout = TimeSpan.FromSeconds(8);
+        internal static readonly TimeSpan PanelAnswerTimeout = TimeSpan.FromSeconds(8);
 
         private static readonly string PanelAnswerTimeoutMessage =
             $"No confirmation from the panel within {PanelAnswerTimeout.TotalSeconds:0} s; check the partition state";

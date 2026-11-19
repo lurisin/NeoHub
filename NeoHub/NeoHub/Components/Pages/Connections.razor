@@ -163,6 +163,15 @@
                                                   Margin="Margin.Dense"
                                                   InputType="InputType.Password" />
                                 </MudItem>
+                                <MudItem xs="12" sm="6">
+                                    <MudNumericField T="int"
+                                                     Label="Trouble Refresh Interval"
+                                                     @bind-Value="conn.TroubleRefreshIntervalSeconds"
+                                                     Min="0" Max="86400"
+                                                     HelperText="Seconds between partition trouble status re-reads (0 = off)"
+                                                     Variant="Variant.Outlined"
+                                                     Margin="Margin.Dense" />
+                                </MudItem>
                             </MudGrid>
                             <MudStack Row="true" Spacing="2" Class="mt-3">
                                 <MudButton Variant="Variant.Filled"

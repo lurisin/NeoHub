@@ -84,7 +84,8 @@ public class ConnectionSettingsProvider : IConnectionSettingsProvider
             DefaultAccessCode = existing.DefaultAccessCode,
             InstallerCode = existing.InstallerCode,
             MasterCode = existing.MasterCode,
-            MaxZones = existing.MaxZones
+            MaxZones = existing.MaxZones,
+            TroubleRefreshIntervalSeconds = existing.TroubleRefreshIntervalSeconds
         };
     }
 

@@ -12,7 +12,8 @@ namespace NeoHub.Services.Models
 
         /// <summary>
         /// The panel reports one or more troubles for this partition (ModulePartitionStatus,
-        /// PartitionStatus2.TroublesPresent). Set by the status pull when the session connects.
+        /// PartitionStatus2.TroublesPresent). Set by the status pull when the session connects and
+        /// refreshed by <see cref="NeoHub.Services.PartitionTroubleRefreshService"/>.
         /// </summary>
         public bool TroublesPresent { get; set; }
 

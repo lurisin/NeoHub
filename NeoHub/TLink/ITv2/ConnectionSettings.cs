@@ -133,6 +133,21 @@ public class ConnectionSettings
     [Range(0, 256)]
     public int MaxZones { get; set; }
 
+    /// <summary>Default for <see cref="TroubleRefreshIntervalSeconds"/>.</summary>
+    public const int DefaultTroubleRefreshIntervalSeconds = 60;
+
+    /// <summary>
+    /// Seconds between re-reads of the partition status while the panel is connected, used to keep the
+    /// partition trouble flag current. 0 turns the re-reads off; the flag is then only read on connect.
+    /// Settings saved before this option existed load with the default.
+    /// </summary>
+    [Display(
+        Name = "Trouble Refresh Interval",
+        Description = "Seconds between partition trouble status re-reads (0 = off)",
+        Order = 11)]
+    [Range(0, 86400)]
+    public int TroubleRefreshIntervalSeconds { get; set; } = DefaultTroubleRefreshIntervalSeconds;
+
     /// <summary>
     /// Whether this connection has all required settings filled in.
     /// Incomplete connections (e.g., auto-created placeholders) will be rejected.
