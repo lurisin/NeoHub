@@ -56,7 +56,13 @@ namespace NeoHub.Services
                 _key = key;
             }
 
-            public void Dispose() => _counts.AddOrUpdate(_key, 0, (_, count) => Math.Max(0, count - 1));
+            public void Dispose()
+            {
+                _counts.AddOrUpdate(_key, 0, (_, count) => Math.Max(0, count - 1));
+                // Drop the entry once nothing runs, so session ids sent by clients (also unknown ones) leave
+                // nothing behind. Removes only if still 0: a command that started meanwhile keeps its count.
+                _counts.TryRemove(new KeyValuePair<string, int>(_key, 0));
+            }
         }
 
         private const int NotReadyToArmResponseCode = 1;
