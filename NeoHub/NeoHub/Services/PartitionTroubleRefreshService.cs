@@ -358,6 +358,13 @@ namespace NeoHub.Services
                 var (troubles, error, noAnswer) = await ReadTroublesAsync(worker.SessionId, partition, ct);
                 if (troubles is not bool present)
                 {
+                    if (!IsSessionCurrent(worker))
+                    {
+                        // A disconnect can end the session (and fail this read) before the worker is stopped;
+                        // that is not a read failure worth a Warning.
+                        _logger.LogDebug("Trouble status read of partition {Partition} ended by the disconnect: {Error}", partition, error);
+                        return false;
+                    }
                     ReportFailure(worker, partition, error!);
                     return !noAnswer;
                 }
@@ -372,6 +379,12 @@ namespace NeoHub.Services
                     worker.Reading = null;
             }
         }
+
+        /// <summary>The worker's session is still connected and still has the state the worker was started for.</summary>
+        private bool IsSessionCurrent(SessionWorker worker) =>
+            !worker.Token.IsCancellationRequested
+            && _sessionManager.GetActiveSessions().Contains(worker.SessionId)
+            && ReferenceEquals(_panelState.GetSession(worker.SessionId), worker.State);
 
         private bool CanRead(SessionWorker worker, out string reason)
         {
