@@ -9,6 +9,13 @@ namespace NeoHub.Services.Models
         public string? Name { get; set; }
         public string DisplayName => Name ?? $"Partition {PartitionNumber}";
         public bool IsReady { get; set; }
+
+        /// <summary>
+        /// The panel reports one or more troubles for this partition (ModulePartitionStatus,
+        /// PartitionStatus2.TroublesPresent). Set by the status pull when the session connects.
+        /// </summary>
+        public bool TroublesPresent { get; set; }
+
         public PartitionStatus Status { get; set; } = PartitionStatus.Unknown;
         public DateTime LastUpdated { get; set; } = DateTime.UtcNow;
 

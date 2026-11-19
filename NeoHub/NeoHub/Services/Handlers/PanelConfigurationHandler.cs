@@ -341,6 +341,8 @@ namespace NeoHub.Services.Handlers
                     && (s1.HasFlag(ModulePartitionStatus.PartitionStatus1.ReadyToArm)
                         || s1.HasFlag(ModulePartitionStatus.PartitionStatus1.ReadyToForceArm));
 
+                state.TroublesPresent = s2.HasFlag(ModulePartitionStatus.PartitionStatus2.TroublesPresent);
+
                 if (s1.HasFlag(ModulePartitionStatus.PartitionStatus1.ExitDelayInProgress))
                 {
                     if (!state.ExitDelayActive)
@@ -358,8 +360,8 @@ namespace NeoHub.Services.Handlers
                 state.LastUpdated = DateTime.UtcNow;
                 _panelState.UpdatePartition(sessionId, state);
 
-                _logger.LogDebug("Partition {Partition} Status1=0x{S1:X} Status2=0x{S2:X} → {Status}, IsReady={IsReady}",
-                    partitionNumber, (byte)s1, (byte)s2, state.Status, state.IsReady);
+                _logger.LogDebug("Partition {Partition} Status1=0x{S1:X} Status2=0x{S2:X} → {Status}, IsReady={IsReady}, TroublesPresent={TroublesPresent}",
+                    partitionNumber, (byte)s1, (byte)s2, state.Status, state.IsReady, state.TroublesPresent);
             }
 
             _logger.LogInformation("Pulled initial partition status");
