@@ -47,8 +47,10 @@ internal sealed class ITv2Session : IITv2Session
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private readonly CancellationTokenSource _shutdownCts = new();
 
-    // Pending receivers for outbound messages awaiting responses
+    // Pending receivers for outbound messages awaiting responses. Senders add to it while the receive pump
+    // matches and cleans it up, so every access takes _pendingReceiversLock (never held across an await).
     private readonly List<IMessageReceiver> _pendingReceivers = new();
+    private readonly object _pendingReceiversLock = new();
 
     // Sequence state
     private byte _localSequence = 1;
@@ -283,11 +285,8 @@ internal sealed class ITv2Session : IITv2Session
                     break;
                 }
 
-                if (_pendingReceivers.Any(receiver => receiver.TryReceive(packet)))
-                {
-                    CleanupCompletedReceivers();
+                if (RouteToPendingReceiver(receiver => receiver.TryReceive(packet)))
                     continue;
-                }
 
                 // Discard unsolicited notifications during the initial message burst
                 if (!_sessionReady.Task.IsCompleted)
@@ -332,10 +331,9 @@ internal sealed class ITv2Session : IITv2Session
 
             foreach (var subMessage in multiMsg.Messages)
             {
-                if (_pendingReceivers.Any(r => r.TryReceiveSubMessage(subMessage)))
+                if (RouteToPendingReceiver(r => r.TryReceiveSubMessage(subMessage)))
                 {
                     _logger.LogDebug("Routed sub-message to pending receiver: {MessageType}", subMessage.GetType().Name);
-                    CleanupCompletedReceivers();
                     continue;
                 }
 
@@ -407,9 +405,16 @@ internal sealed class ITv2Session : IITv2Session
         || commandName.Contains("User_Code", StringComparison.Ordinal)
         || commandName.Contains("Request_Access", StringComparison.Ordinal);
 
-    private void CleanupCompletedReceivers()
+    /// <summary>Offers an inbound message to the pending receivers; on a match, drops the completed ones.</summary>
+    private bool RouteToPendingReceiver(Func<IMessageReceiver, bool> tryReceive)
     {
-        _pendingReceivers.RemoveAll(r => r.IsCompleted);
+        lock (_pendingReceiversLock)
+        {
+            if (!_pendingReceivers.Any(tryReceive))
+                return false;
+            _pendingReceivers.RemoveAll(r => r.IsCompleted);
+            return true;
+        }
     }
 
     #endregion
@@ -455,7 +460,8 @@ internal sealed class ITv2Session : IITv2Session
                 receiver = MessageReceiver.CreateNotificationReceiver(senderSeq);
             }
 
-            _pendingReceivers.Add(receiver);
+            lock (_pendingReceiversLock)
+                _pendingReceivers.Add(receiver);
 
             var packet = new ITv2Packet(senderSeq, _remoteSequence, message);
             var sendResult = await SendPacketAsync(packet, ct);
@@ -463,7 +469,8 @@ internal sealed class ITv2Session : IITv2Session
             if (sendResult.IsFailure)
             {
                 receiver.Dispose();
-                _pendingReceivers.Remove(receiver);
+                lock (_pendingReceiversLock)
+                    _pendingReceivers.Remove(receiver);
                 return Result<IMessageData>.Fail(sendResult.Error!.Value);
             }
         }
@@ -640,9 +647,12 @@ internal sealed class ITv2Session : IITv2Session
         _readyTimer?.Dispose();
         _notificationChannel.Writer.Complete();
 
-        foreach (var receiver in _pendingReceivers)
-            receiver.Dispose();
-        _pendingReceivers.Clear();
+        lock (_pendingReceiversLock)
+        {
+            foreach (var receiver in _pendingReceivers)
+                receiver.Dispose();
+            _pendingReceivers.Clear();
+        }
 
         _sendLock.Dispose();
         _shutdownCts.Dispose();
