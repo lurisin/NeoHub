@@ -369,8 +369,8 @@ internal sealed class ITv2Session : IITv2Session
     /// Logs a panel notification that NeoHub cannot decode (it arrived as <see cref="DefaultMessage"/> and was not
     /// the answer to a request): at Information once per command word per session, with its payload length, and
     /// at Debug every time, with the payload in hex. This shows what the panel sends, for example when a trouble
-    /// occurs, without a Debug log level. The payload comes from the panel; nothing sent by NeoHub, such as an
-    /// access code, is logged here.
+    /// occurs, without a Debug log level. The payload comes from the panel; for command words that may carry an
+    /// access code (<see cref="MayCarrySecret"/>) only its length is logged.
     /// </summary>
     private void LogUndecodedNotification(IMessageData message)
     {
@@ -386,10 +386,26 @@ internal sealed class ITv2Session : IITv2Session
                 "Undecoded panel notification {Command} (0x{CommandWord:X4}), {Length} payload bytes; later ones with this command word are logged at Debug only",
                 name, word, undecoded.Data.Length);
 
+        if (MayCarrySecret(name))
+        {
+            _logger.LogDebug("Undecoded panel notification {Command} (0x{CommandWord:X4}): payload of {Length} bytes not logged (access code command)",
+                name, word, undecoded.Data.Length);
+            return;
+        }
+
         _logger.LogDebug("Undecoded panel notification {Command} (0x{CommandWord:X4}) payload: {Payload}{Detail}",
             name, word, new HexBytes(undecoded.Data),
             undecoded.DeserializationError is null ? "" : $" ({undecoded.DeserializationError})");
     }
+
+    /// <summary>
+    /// Command words whose payload may hold an access code or key material (access and user code reads, writes
+    /// and notifications, and the request-access handshake). Their undecoded payload is not dumped.
+    /// </summary>
+    private static bool MayCarrySecret(string commandName) =>
+        commandName.Contains("Access_Code", StringComparison.Ordinal)
+        || commandName.Contains("User_Code", StringComparison.Ordinal)
+        || commandName.Contains("Request_Access", StringComparison.Ordinal);
 
     private void CleanupCompletedReceivers()
     {
