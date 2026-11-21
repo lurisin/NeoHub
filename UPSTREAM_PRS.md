@@ -60,6 +60,9 @@ This fork is upstream `master` (61a1a0e) plus these commits, in this order:
 | `Add the experimental activate_fap WebSocket command` | Draft PR (section H) |
 | `Document command results, FAP commands and the session takeover` | README parts of sections F, G and H |
 | `Add upstream PR drafts F, G and H` | Fork only, never submit |
+| `Test FAP replies that are only an ack, each gate alone, and a real close` | Draft PR (section H, with one test for section F) |
+| `Reload the settings right after saving them` | Draft PR (section H) |
+| `Update upstream PR drafts F, G and H` | Fork only, never submit |
 
 Section C is the research record for fire / auxiliary / panic activation (`ModuleControl_Activate_FAP`, 0x0908). It is now implemented, gated and experimental, as section H.
 Section D is a separate draft PR (command results, panel response codes, an 8 s bound on the panel's answer, partition ready state). It builds on section A.
@@ -601,7 +604,7 @@ Untested:
 
 When a panel reconnects before NeoHub notices that its previous TCP connection is gone, the new connection now takes over the session id. Before, the new connection was never registered, and the old connection's teardown then removed the session for good. The panel stayed connected, but NeoHub had no session for it until the next reconnect, which could be hours later.
 
-## The bug (reproduced on master's code)
+## The bug (reproduced with the lifecycle code of master)
 
 `ITv2SessionManager.RegisterSession` used `TryAdd`. For the second connection with the same id it only logged "Session already registered". When the old connection ended, the connection handler's `finally` called `UnregisterSession(sessionId)`. That removed the registration (the new connection's id) and published `SessionDisconnectedNotification`, and the lifecycle handler removed the session state. From then on:
 
@@ -611,7 +614,7 @@ When a panel reconnects before NeoHub notices that its previous TCP connection i
 
 A command sent while both connections overlapped went to the stale connection and failed when that connection was torn down ("A task was canceled." in our test).
 
-A test reproduced this with two simulated connections with the same id, the real MediatR handlers and the real WebSocket handler. A real log showed the same sequence: "Session already registered", later "Session unregistered. Active sessions: 0" and "Removed session state", while the panel stayed connected on the new connection.
+A test reproduced this with two simulated connections with the same id, the real MediatR handlers and the real WebSocket handler. It ran on the fork's previous release, whose `ITv2SessionManager`, connection handler, lifecycle handler and lifecycle notifications are identical to master 61a1a0e. A real log showed the same sequence: "Session already registered", later "Session unregistered. Active sessions: 0" and "Removed session state", while the panel stayed connected on the new connection.
 
 ## Changes
 
@@ -689,7 +692,7 @@ xUnit tests (new test project) with the real session manager, MediatR, handlers,
 
 ## Test evidence
 
-Unit tests: every enum member has a text; the listed texts; unknown values; code 1 for arm versus other commands. Through the real WebSocket handler, with the real services and a simulated panel, exact `command_result` frames for success, code 1 on all five arm commands (and the not-ready re-read event raised), code 1 on disarm and bypass, codes 17 and 99, NACKs 1, 9 and 77 (no not-ready event), session not found and no answer in time. Replies without `request_id` for codes 1, 17 and 99 and for a NACK are byte-identical to master's (checked against master's build).
+Unit tests: every enum member has a text; the listed texts; unknown values; code 1 for arm versus other commands. Through the real WebSocket handler, with the real services and a simulated panel, exact `command_result` frames for success, code 1 on all five arm commands (and the not-ready re-read event raised), code 1 on disarm and bypass, codes 17 and 99, NACKs 1, 9 and 77 (no not-ready event), session not found and no answer in time. Replies without `request_id` for codes 1, 17 and 99 and for a NACK are byte-identical to those of the fork's previous release, which has section D's reply paths (checked against that build); 74 legacy scenarios of the fork's harness are byte-identical too.
 ````
 
 ### Checklist for the owner before submitting
@@ -709,7 +712,9 @@ Unit tests: every enum member has a text; the listed texts; unknown values; code
   1. `Add the ModuleControl_Activate_FAP message behind a fail-closed gate`
   2. `Add the AllowFapCommands application setting, off by default`
   3. `Add the experimental activate_fap WebSocket command`
-  The tests need the test project commit and section F's helpers.
+  4. `Test FAP replies that are only an ack, each gate alone, and a real close`
+  5. `Reload the settings right after saving them`
+  The tests need the test project commit and section F's helpers. Commit 4's real-transport test belongs to section F.
 - **Inferred layout, not verified.** The body `[command sequence][CompactInt partition][type]` with fire 0, auxiliary 1,
   panic 2 and no access code comes from LawPaul/HA_DSC_Neo_ITv2 (GPL-3.0, like NeoHub), `dsc_itv2/messages.py`, class
   `ModuleControlActivateFAP` @776b170. Its docstring says "Layout per dsc-itv2-protocol observations" and "per panel
@@ -747,7 +752,8 @@ Unit and transport-level tests with a real `ITv2Session` on a fake transport:
 - **Invalid requests:** 25 invalid requests and 4 without a usable `request_id` leave no frame.
 - **Valid request:** exactly one frame leaves, with the expected bytes.
 - **No second frame:** neither no answer, nor a takeover while waiting, nor a rejection or a NACK leads to a second frame. Code 1 gets the generic text and does not trigger the arm not-ready handling.
-- **Settings:** the setting is read from the saved settings, and an unsaved edit has no effect. The capability follows the setting, and a change pushes `full_state`.
+- **Settings:** the setting is read from the saved settings, and an unsaved edit has no effect. Saving applies at once, also without a file watcher (commit 5). The capability follows the setting, and a change pushes `full_state`.
+- **Panel replies:** a transport ack and then silence gives the "may still have been triggered" reply with one frame; an ack and then a `CommandResponse` in a later packet is a success. Each gate holds on its own: with the TLink policy allowing FAP, a command service or WebSocket handler built without FAP settings still sends nothing.
 - **Real NeoHub process (no panel):** after the settings file was rewritten, `full_state` with `fap` was pushed within 0.3 s, and the Settings page shows the warning.
 
 ## Untested
