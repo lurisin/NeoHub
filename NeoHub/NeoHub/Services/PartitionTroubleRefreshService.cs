@@ -361,13 +361,14 @@ namespace NeoHub.Services
 
             try
             {
-                var (troubles, error, noAnswer) = await ReadTroublesAsync(worker.SessionId, partition, ct);
+                var (troubles, error, noAnswer, sessionClosed) = await ReadTroublesAsync(worker.SessionId, partition, ct);
                 if (troubles is not bool present)
                 {
-                    if (!IsSessionCurrent(worker))
+                    if (sessionClosed || !IsSessionCurrent(worker))
                     {
-                        // A disconnect can end the session (and fail this read) before the worker is stopped;
-                        // that is not a read failure worth a Warning.
+                        // A disconnect can end the session (and fail this read) before the worker is stopped, and a
+                        // newer connection taking the session over closes the old one under a read in flight;
+                        // neither is a read failure worth a Warning.
                         _logger.LogDebug("Trouble status read of partition {Partition} ended by the disconnect: {Error}", partition, error);
                         return false;
                     }
@@ -446,9 +447,10 @@ namespace NeoHub.Services
         /// <summary>
         /// Reads PartitionStatus2.TroublesPresent for one partition. Returns the flag, or null and the reason
         /// when there is no usable answer; NoAnswer is true when the panel did not answer within
-        /// <see cref="PanelCommandService.PanelAnswerTimeout"/>.
+        /// <see cref="PanelCommandService.PanelAnswerTimeout"/>, SessionClosed when the session was closed while
+        /// the read waited.
         /// </summary>
-        private async Task<(bool? Troubles, string? Error, bool NoAnswer)> ReadTroublesAsync(string sessionId, byte partition, CancellationToken ct)
+        private async Task<(bool? Troubles, string? Error, bool NoAnswer, bool SessionClosed)> ReadTroublesAsync(string sessionId, byte partition, CancellationToken ct)
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(PanelCommandService.PanelAnswerTimeout);
@@ -466,26 +468,26 @@ namespace NeoHub.Services
                 ct.ThrowIfCancellationRequested();
                 if (!response.Success)
                     return timeout.IsCancellationRequested
-                        ? (null, NoAnswerText, true)
-                        : (null, response.ErrorMessage ?? "request failed", false);
+                        ? (null, NoAnswerText, true, false)
+                        : (null, response.ErrorMessage ?? "request failed", false, response.ErrorCode == DSC.TLink.TLinkErrorCode.Cancelled);
                 if (response.PanelNack is not null)
-                    return (null, $"refused by the panel interface (NACK: {response.PanelNack})", false);
+                    return (null, $"refused by the panel interface (NACK: {response.PanelNack})", false, false);
                 if (response.MessageData is not ModulePartitionStatus status)
-                    return (null, $"unexpected answer {response.MessageData?.GetType().Name ?? "(none)"}", false);
+                    return (null, $"unexpected answer {response.MessageData?.GetType().Name ?? "(none)"}", false, false);
                 if (status.Partition != partition)
-                    return (null, $"answer for partition {status.Partition}", false);
+                    return (null, $"answer for partition {status.Partition}", false, false);
                 if (status.PartitionStatus.Length < 2)
-                    return (null, "answer without the second status byte", false);
+                    return (null, "answer without the second status byte", false, false);
 
-                return (status.Status2.HasFlag(ModulePartitionStatus.PartitionStatus2.TroublesPresent), null, false);
+                return (status.Status2.HasFlag(ModulePartitionStatus.PartitionStatus2.TroublesPresent), null, false, false);
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
-                return (null, NoAnswerText, true);
+                return (null, NoAnswerText, true, false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                return (null, ex.Message, false);
+                return (null, ex.Message, false, false);
             }
         }
 

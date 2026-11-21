@@ -30,7 +30,26 @@ namespace NeoHub.Services.Handlers
 
         public Task Handle(SessionConnectedNotification notification, CancellationToken cancellationToken)
         {
-            _logger.LogInformation("Session connected");
+            if (notification.ReplacedConnection)
+            {
+                // A newer connection took the session over. Its state is kept, so clients see no gap; the connect
+                // pull that follows refreshes it. What belonged to the old connection starts afresh, as it does for
+                // a new state: the programming mode flag (set by lead-in / lead-out notifications on the old
+                // connection; a missed lead-out would otherwise pause the trouble refresh) and the connect time.
+                _logger.LogInformation("Session taken over by a newer connection; keeping its state until the connect pull refreshes it");
+                if (_panelState.GetSession(notification.SessionId) is not null)
+                {
+                    _panelState.UpdateSession(notification.SessionId, s =>
+                    {
+                        s.IsInProgrammingMode = false;
+                        s.ConnectedAt = DateTime.UtcNow;
+                    });
+                }
+            }
+            else
+            {
+                _logger.LogInformation("Session connected");
+            }
             _settingsProvider.ConfirmDefaults(notification.SessionId);
             _monitor.NotifyChanged();
             return Task.CompletedTask;

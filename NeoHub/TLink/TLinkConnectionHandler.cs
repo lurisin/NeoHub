@@ -63,18 +63,7 @@ namespace DSC.TLink
                 using var sessionScope = _log.BeginScope(
                     CreateLogScope(session.SessionId));
 
-                sessionManager.RegisterSession(session.SessionId, session);
-                try
-                {
-                    await foreach (var message in session.GetNotificationsAsync(connection.ConnectionClosed))
-                    {
-                        await sessionMediator.PublishNotificationAsync(session.SessionId, message);
-                    }
-                }
-                finally
-                {
-                    sessionManager.UnregisterSession(session.SessionId);
-                }
+                await RunSessionAsync(session, sessionManager, sessionMediator, connection.ConnectionClosed, _log);
             }
             catch (OperationCanceledException) when (connection.ConnectionClosed.IsCancellationRequested)
             {
@@ -87,6 +76,48 @@ namespace DSC.TLink
             finally
             {
                 _log.LogInformation("TLink disconnected from {RemoteEndPoint}", connection.RemoteEndPoint);
+            }
+        }
+
+        /// <summary>
+        /// Registers the session, publishes its notifications while it owns the registration, and unregisters it
+        /// when its notifications end. A newer connection with the same session id can take the registration over
+        /// (<see cref="IITv2SessionManager.RegisterSession"/>): the manager then closes this session, the loop ends,
+        /// and the unregistration removes nothing. Notifications that arrive after this session lost the
+        /// registration (takeover, or a disconnect from the UI) are dropped, so they cannot recreate state for a
+        /// connection NeoHub no longer uses.
+        /// </summary>
+        internal static async Task RunSessionAsync(
+            IITv2Session session,
+            IITv2SessionManager sessionManager,
+            SessionMediator sessionMediator,
+            CancellationToken connectionClosed,
+            ILogger log)
+        {
+            var sessionId = session.SessionId;
+            sessionManager.RegisterSession(sessionId, session);
+            try
+            {
+                await foreach (var message in session.GetNotificationsAsync(connectionClosed))
+                {
+                    if (!sessionManager.IsCurrentSession(sessionId, session))
+                    {
+                        log.LogDebug("Dropping {MessageType} from a connection that no longer owns the session",
+                            message.GetType().Name);
+                        continue;
+                    }
+                    await sessionMediator.PublishNotificationAsync(sessionId, message);
+                }
+            }
+            catch (OperationCanceledException) when (!connectionClosed.IsCancellationRequested
+                                                     && !sessionManager.IsCurrentSession(sessionId, session))
+            {
+                // The session was closed from our side (replaced by a newer connection, or disconnected in the UI).
+                log.LogInformation("Connection closed after the session was replaced or disconnected");
+            }
+            finally
+            {
+                sessionManager.UnregisterSession(sessionId, session);
             }
         }
     }

@@ -93,6 +93,19 @@ namespace DSC.TLink.ITv2.MediatR
                     MessageData = result.Value
                 };
             }
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                // A cancellation the caller did not ask for: the session was closed while the command waited
+                // (disconnect, or a newer connection took the session over). Expected, so no Error with a stack
+                // trace; the message is unchanged. Cancelled, not Disconnected, which a failed transport send gives.
+                _logger.Log(failureLevel, "Command ended: the session was closed while it waited for the panel");
+                return new SessionResponse
+                {
+                    Success = false,
+                    ErrorCode = TLinkErrorCode.Cancelled,
+                    ErrorMessage = ex.Message
+                };
+            }
             catch (Exception ex)
             {
                 _logger.Log(request.LogFailuresAtDebug ? LogLevel.Debug : LogLevel.Error, ex, "Error handling command");
