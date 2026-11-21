@@ -215,9 +215,54 @@ public class FapCommandTests
         Assert.Equal(new[] { Failed("k", NoAnswer) }, results);
         await c.Host.Manager.LifecycleIdleAsync(Id).WaitAsync(TimeSpan.FromSeconds(10));
         Assert.Equal(1, c.FapFrames);
+        Assert.DoesNotContain(c.Session.Transport.SentMessages(), m => m is ConnectionEndSession);   // replaced: no END_SESSION
         Assert.DoesNotContain(b.Transport.SentPayloads, p => FakeTransport.CarriesCommandWord(p, FapCommandWord));
         b.Transport.EndInbound();
         await loopB.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task Only_a_transport_ack_and_then_silence_is_no_answer_and_sends_once()
+    {
+        await using var c = await ConnectAsync(allowFap: true);
+        c.Panel.AckFirst[typeof(ActivateFap)] = null;
+
+        Assert.Equal(new[] { Failed("s", NoAnswer) }, await Send(c.Host, Fap("\"s\"")));
+        Assert.Equal(1, c.FapFrames);
+    }
+
+    [Fact]
+    public async Task An_ack_then_a_command_response_in_a_later_packet_is_success()
+    {
+        await using var c = await ConnectAsync(allowFap: true);
+        c.Panel.AckFirst[typeof(ActivateFap)] = TimeSpan.FromMilliseconds(300);
+
+        Assert.Equal(new[] { """{"type":"command_result","request_id":"l","success":true,"code":null,"code_kind":null,"message":null}""" },
+            await Send(c.Host, Fap("\"l\"")));
+        Assert.Equal(1, c.FapFrames);
+    }
+
+    [Fact]
+    public async Task Each_gate_holds_on_its_own()
+    {
+        // The TLink policy allows FAP, but a command service or WebSocket handler built without FAP settings refuses.
+        await using var c = await ConnectAsync(allowFap: true);
+        var services = c.Host.Services;
+        var commands = new PanelCommandService(services.GetRequiredService<IMediator>(),
+            services.GetRequiredService<ILogger<PanelCommandService>>(),
+            services.GetRequiredService<IOptionsMonitor<PanelConnectionsSettings>>());
+        var refused = await commands.ActivateFapAsync(Id, 1, FapType.Fire);
+        Assert.Equal((false, true, Disabled), (refused.Success, refused.NotSent, refused.DisplayMessage));
+
+        var handler = new NeoHub.Api.WebSocket.PanelWebSocketHandler(c.Host.State, c.Host.Commands, c.Host.Manager,
+            services.GetRequiredService<ISessionMonitor>(), services.GetRequiredService<ILogger<NeoHub.Api.WebSocket.PanelWebSocketHandler>>());
+        var socket = new CaptureSocket();
+        await (Task)typeof(NeoHub.Api.WebSocket.PanelWebSocketHandler)
+            .GetMethod("ProcessMessageAsync", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+            .Invoke(handler, new object[] { socket, Fap("\"g\""), "client2" })!;
+        Assert.Equal(new[] { Failed("g", Disabled) }, socket.Frames());
+
+        Assert.Equal(0, c.FapFrames);
     }
 
     private static string[] Capabilities(string fullState) =>

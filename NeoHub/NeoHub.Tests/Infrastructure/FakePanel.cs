@@ -29,6 +29,12 @@ internal sealed class FakePanel
     /// <summary>Command types the panel never answers (the sender waits until it gives up).</summary>
     public ConcurrentDictionary<Type, bool> NeverAnswer { get; } = new();
 
+    /// <summary>
+    /// Command types the panel answers with a transport-level SimpleAck only (behind a real session's transport),
+    /// then nothing, or, when the value is a delay, then a CommandResponse in a separate packet after that delay.
+    /// </summary>
+    public ConcurrentDictionary<Type, TimeSpan?> AckFirst { get; } = new();
+
     /// <summary>While set, ModulePartitionStatus requests wait for it before they are answered.</summary>
     public TaskCompletionSource? HoldPartitionStatus { get; set; }
 
