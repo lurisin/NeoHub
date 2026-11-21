@@ -5,6 +5,7 @@ using DSC.TLink;
 using DSC.TLink.ITv2;
 using DSC.TLink.ITv2.Enumerations;
 using DSC.TLink.ITv2.MediatR;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using NeoHub.Api.WebSocket;
@@ -44,6 +45,9 @@ internal sealed class TestHost : IAsyncDisposable
     public CaptureSocket Client { get; }
     public ConnectionSettings Connection { get; private set; } = null!;
 
+    /// <summary>The configuration NeoHub reads its settings from (in memory here; the settings file in NeoHub).</summary>
+    public IConfigurationRoot Configuration { get; private set; } = null!;
+
     public ITv2SessionManager Manager => (ITv2SessionManager)Services.GetRequiredService<IITv2SessionManager>();
     public PanelStateService State => (PanelStateService)Services.GetRequiredService<IPanelStateService>();
     public PanelCommandService Commands => (PanelCommandService)Services.GetRequiredService<IPanelCommandService>();
@@ -51,8 +55,12 @@ internal sealed class TestHost : IAsyncDisposable
     public PartitionTroubleRefreshService Refresh => Services.GetRequiredService<PartitionTroubleRefreshService>();
     public SessionMediator SessionMediator => Services.GetRequiredService<SessionMediator>();
 
-    public static async Task<TestHost> StartAsync(int troubleRefreshIntervalSeconds = 0, Action<IServiceCollection>? configure = null)
+    public static async Task<TestHost> StartAsync(int troubleRefreshIntervalSeconds = 0, Action<IServiceCollection>? configure = null, bool allowFap = false)
     {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            [FapCommandSettings.ConfigurationKey] = allowFap ? "true" : null,
+        }).Build();
         var logs = new CaptureLoggerProvider();
         var connection = new ConnectionSettings
         {
@@ -65,7 +73,11 @@ internal sealed class TestHost : IAsyncDisposable
         services.AddLogging(b => b.ClearProviders().AddProvider(logs).SetMinimumLevel(LogLevel.Trace));
         services.AddMediatR(cfg => cfg.RegisterServicesFromAssemblies(typeof(Program).Assembly, typeof(StartupExtensions).Assembly));
         services.Configure<PanelConnectionsSettings>(s => s.Connections.Add(connection));
-        services.Configure<ApplicationSettings>(_ => { });
+        services.AddSingleton<IConfiguration>(configuration);
+        services.Configure<ApplicationSettings>(configuration.GetSection(ApplicationSettings.SectionName));
+        services.AddSingleton<FapCommandSettings>();
+        services.AddSingleton<IFapCommandSettings>(sp => sp.GetRequiredService<FapCommandSettings>());
+        services.AddSingleton<IFapCommandPolicy>(sp => sp.GetRequiredService<FapCommandSettings>());
         services.AddSingleton<IPanelStateService, PanelStateService>();
         services.AddSingleton<IPanelCommandService, PanelCommandService>();
         services.AddSingleton<ISessionMonitor, SessionMonitor>();
@@ -78,12 +90,19 @@ internal sealed class TestHost : IAsyncDisposable
         configure?.Invoke(services);
 
         var provider = services.BuildServiceProvider();
-        var host = new TestHost(provider, logs) { Connection = connection };
+        var host = new TestHost(provider, logs) { Connection = connection, Configuration = configuration };
         await host.Refresh.StartAsync(CancellationToken.None);
         return host;
     }
 
     public FakeSession NewSession(FakePanel panel, string name) => new(SessionId, panel, name);
+
+    /// <summary>Saves AllowFapCommands, as a Save on the Settings page does (the settings file is reloaded).</summary>
+    public void SaveAllowFap(bool on)
+    {
+        Configuration[FapCommandSettings.ConfigurationKey] = on ? "true" : "false";
+        Configuration.Reload();
+    }
 
     /// <summary>Runs one panel connection the way the TLink connection handler does, until its notifications end.</summary>
     public Task Connect(IITv2Session session)

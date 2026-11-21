@@ -14,6 +14,13 @@ namespace NeoHub.Services
         Task<PanelCommandResult> BypassZoneAsync(string sessionId, byte partition, byte zoneNumber, bool bypass, string? accessCode = null);
 
         /// <summary>
+        /// EXPERIMENTAL: sends ModuleControl_Activate_FAP once (never retried) and reports the panel's answer, or no
+        /// answer within the usual bound. Raises a real alarm reported to the monitoring station. Refused, with nothing
+        /// sent, while <see cref="Settings.ApplicationSettings.AllowFapCommands"/> is off.
+        /// </summary>
+        Task<PanelCommandResult> ActivateFapAsync(string sessionId, byte partition, FapType type);
+
+        /// <summary>
         /// True while an <see cref="ArmAsync"/>, <see cref="DisarmAsync"/> or <see cref="BypassZoneAsync"/> call
         /// for this session is running (from the call until it returns, including the wait for the panel).
         /// Background reads use it to stay out of the way of commands.
@@ -72,6 +79,9 @@ namespace NeoHub.Services
 
         /// <summary>True when the panel did not answer in time; the panel may still have acted on the command.</summary>
         public bool TimedOut { get; init; }
+
+        /// <summary>The command was refused before anything was sent to the panel (session not found, FAP disabled).</summary>
+        public bool NotSent { get; init; }
 
         /// <summary>The text to show people: <see cref="UserMessage"/> when set, otherwise <see cref="ErrorMessage"/>.</summary>
         public string? DisplayMessage => UserMessage ?? ErrorMessage;

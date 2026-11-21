@@ -18,7 +18,7 @@ namespace DSC.TLink.ITv2.MediatR
         private readonly IFapCommandPolicy[] _fapPolicies;
 
         /// <summary>The text of a refused <see cref="ActivateFap"/>.</summary>
-        public const string FapDisabledMessage = "FAP commands are disabled in the NeoHub settings";
+        public const string FapDisabledMessage = ActivateFap.DisabledMessage;
 
         public SessionMediator(
             IMediator mediator,

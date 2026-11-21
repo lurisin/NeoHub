@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using NeoHub.Services.Models;
 
@@ -13,6 +14,7 @@ namespace NeoHub.Api.WebSocket.Models
     [JsonDerivedType(typeof(ArmAwayInstantMessage), "arm_away_instant")]
     [JsonDerivedType(typeof(DisarmMessage), "disarm")]
     [JsonDerivedType(typeof(BypassZoneMessage), "bypass_zone")]
+    [JsonDerivedType(typeof(ActivateFapMessage), "activate_fap")]
     [JsonDerivedType(typeof(FullStateMessage), "full_state")]
     [JsonDerivedType(typeof(PartitionUpdateMessage), "partition_update")]
     [JsonDerivedType(typeof(ZoneUpdateMessage), "zone_update")]
@@ -64,6 +66,33 @@ namespace NeoHub.Api.WebSocket.Models
         public required bool Bypass { get; init; }
         public string? Code { get; init; }
         public string? RequestId { get; init; }
+    }
+
+    /// <summary>
+    /// EXPERIMENTAL: raise a Fire, Auxiliary or Panic alarm on a partition (ModuleControl_Activate_FAP), only while
+    /// AllowFapCommands is on in the NeoHub settings. All fields are required:
+    /// <c>{"type":"activate_fap","session_id":"..","partition":1,"fap_type":"fire"|"auxiliary"|"panic","request_id":".."}</c>.
+    /// The FAP kind is "fap_type" because "type" is the message discriminator. The fields are kept as raw JSON and
+    /// validated by the handler, so a missing or wrong value gets a command_result (or, without request_id, an
+    /// "error"), never a JSON error and never a default.
+    /// </summary>
+    public record ActivateFapMessage : WebSocketMessage, ICorrelatedCommandMessage
+    {
+        [JsonPropertyName("session_id")]
+        public JsonElement SessionIdValue { get; init; }
+
+        [JsonPropertyName("partition")]
+        public JsonElement PartitionValue { get; init; }
+
+        [JsonPropertyName("fap_type")]
+        public JsonElement FapTypeValue { get; init; }
+
+        [JsonPropertyName("request_id")]
+        public JsonElement RequestIdValue { get; init; }
+
+        /// <summary>The request_id when it is a JSON string; otherwise null (treated as missing).</summary>
+        [JsonIgnore]
+        public string? RequestId => RequestIdValue.ValueKind == JsonValueKind.String ? RequestIdValue.GetString() : null;
     }
 
     #endregion

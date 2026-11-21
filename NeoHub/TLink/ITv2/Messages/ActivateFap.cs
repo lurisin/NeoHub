@@ -18,6 +18,9 @@ namespace DSC.TLink.ITv2.Messages
     [ITv2Command(ITv2Command.ModuleControl_Activate_FAP)]
     public sealed record ActivateFap : CommandMessageBase
     {
+        /// <summary>The answer to a FAP request while FAP commands are not allowed.</summary>
+        public const string DisabledMessage = "FAP commands are disabled in the NeoHub settings";
+
         [CompactInteger]
         public required int Partition { get; init; }
 

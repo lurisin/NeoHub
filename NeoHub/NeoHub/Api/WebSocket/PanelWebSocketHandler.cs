@@ -21,20 +21,34 @@ namespace NeoHub.Api.WebSocket
         private readonly IITv2SessionManager _sessionManager;
         private readonly ISessionMonitor _sessionMonitor;
         private readonly ILogger<PanelWebSocketHandler> _logger;
+        private readonly IFapCommandSettings? _fapSettings;
         private readonly ConcurrentDictionary<System.Net.WebSockets.WebSocket, byte> _connectedClients = new();
 
+        /// <summary>Without FAP settings: activate_fap is always refused and "fap" never advertised.</summary>
         public PanelWebSocketHandler(
             IPanelStateService panelState,
             IPanelCommandService commandService,
             IITv2SessionManager sessionManager,
             ISessionMonitor sessionMonitor,
             ILogger<PanelWebSocketHandler> logger)
+            : this(panelState, commandService, sessionManager, sessionMonitor, logger, fapSettings: null)
+        {
+        }
+
+        public PanelWebSocketHandler(
+            IPanelStateService panelState,
+            IPanelCommandService commandService,
+            IITv2SessionManager sessionManager,
+            ISessionMonitor sessionMonitor,
+            ILogger<PanelWebSocketHandler> logger,
+            IFapCommandSettings? fapSettings)
         {
             _panelState = panelState;
             _commandService = commandService;
             _sessionManager = sessionManager;
             _sessionMonitor = sessionMonitor;
             _logger = logger;
+            _fapSettings = fapSettings;
 
             _logger.LogInformation("PanelWebSocketHandler initialized. Subscribed to state change events.");
 
@@ -42,6 +56,8 @@ namespace NeoHub.Api.WebSocket
             _panelState.PartitionStateChanged += OnPartitionChanged;
             _panelState.ZoneStateChanged += OnZoneChanged;
             _panelState.ConfigurationComplete += OnConfigurationComplete;
+            if (_fapSettings is not null)
+                _fapSettings.Changed += OnFapSettingChanged;
         }
 
         public async Task HandleConnectionAsync(HttpContext context)
@@ -171,6 +187,10 @@ namespace NeoHub.Api.WebSocket
                         await HandleBypassZoneCommandAsync(webSocket, bypassZone, clientId);
                         break;
 
+                    case ActivateFapMessage activateFap:
+                        await HandleActivateFapAsync(webSocket, activateFap, clientId);
+                        break;
+
                     default:
                         _logger.LogWarning("Client {ClientId} sent unknown message type: {MessageType}", clientId, message.GetType().Name);
                         await SendErrorAsync(webSocket, $"Unknown message type: {message.GetType().Name}", clientId);
@@ -248,7 +268,7 @@ namespace NeoHub.Api.WebSocket
                 sessions.Sum(s => s.Partitions.Count),
                 sessions.Sum(s => s.Zones.Count));
 
-            var message = new FullStateMessage { Sessions = sessions, Capabilities = _capabilities };
+            var message = new FullStateMessage { Sessions = sessions, Capabilities = CurrentCapabilities() };
             await SendMessageAsync(webSocket, message, clientId);
         }
 
@@ -295,6 +315,85 @@ namespace NeoHub.Api.WebSocket
                     command.SessionId, command.PartitionNumber, command.ZoneNumber, command.Bypass, command.Code));
 
             await SendCommandOutcomeAsync(webSocket, command, result, "Bypass command failed", clientId);
+        }
+
+        private static readonly IReadOnlyDictionary<string, DSC.TLink.ITv2.Enumerations.FapType> _fapTypes =
+            new Dictionary<string, DSC.TLink.ITv2.Enumerations.FapType>(StringComparer.Ordinal)
+            {
+                ["fire"] = DSC.TLink.ITv2.Enumerations.FapType.Fire,
+                ["auxiliary"] = DSC.TLink.ITv2.Enumerations.FapType.Auxiliary,
+                ["panic"] = DSC.TLink.ITv2.Enumerations.FapType.Panic,
+            };
+
+        /// <summary>
+        /// EXPERIMENTAL activate_fap: raises a real alarm reported to the monitoring station. Checked in this order,
+        /// before any panel traffic: request_id (without one: an "error" message), the AllowFapCommands setting, then
+        /// session_id, partition and fap_type (each answered with a failed command_result). Sent once through
+        /// PanelCommandService; every request and its result are logged at Warning.
+        /// </summary>
+        private async Task HandleActivateFapAsync(System.Net.WebSockets.WebSocket webSocket, ActivateFapMessage command, string clientId)
+        {
+            if (command.RequestId is null)
+            {
+                _logger.LogWarning("Client {ClientId} → activate_fap refused, nothing sent: no request_id", clientId);
+                await SendErrorAsync(webSocket, "activate_fap requires request_id", clientId);
+                return;
+            }
+
+            var rejection = ValidateActivateFap(command, out var sessionId, out var partition, out var fapType);
+            if (rejection is not null)
+            {
+                _logger.LogWarning("Client {ClientId} → activate_fap {RequestId} refused, nothing sent: {Reason}",
+                    clientId, command.RequestId, rejection);
+                await SendCommandOutcomeAsync(webSocket, command, PanelCommandResult.Error(rejection) with { NotSent = true },
+                    "FAP command refused", clientId);
+                return;
+            }
+
+            _logger.LogWarning(
+                "Client {ClientId} → activate_fap {RequestId}: Session={SessionId}, Partition={Partition}, Type={FapType} (experimental, raises a real alarm)",
+                clientId, command.RequestId, sessionId, partition, fapType);
+
+            var result = await RunCommandAsync(command, clientId,
+                () => _commandService.ActivateFapAsync(sessionId, partition, fapType));
+
+            _logger.LogWarning("Client {ClientId} → activate_fap {RequestId} result: {Outcome}",
+                clientId, command.RequestId, result.Accepted ? "accepted by the panel" : result.DisplayMessage);
+
+            await SendCommandOutcomeAsync(webSocket, command, result, "FAP command failed", clientId);
+        }
+
+        /// <summary>The reason to refuse an activate_fap request, or null when it may be sent.</summary>
+        private string? ValidateActivateFap(ActivateFapMessage command, out string sessionId, out byte partition,
+            out DSC.TLink.ITv2.Enumerations.FapType fapType)
+        {
+            sessionId = string.Empty;
+            partition = 0;
+            fapType = default;
+
+            if (_fapSettings?.AllowFapCommands != true)
+                return DSC.TLink.ITv2.Messages.ActivateFap.DisabledMessage;
+
+            if (command.SessionIdValue.ValueKind != JsonValueKind.String
+                || string.IsNullOrWhiteSpace(command.SessionIdValue.GetString()))
+                return "activate_fap requires session_id";
+            sessionId = command.SessionIdValue.GetString()!;
+            if (!_sessionManager.GetActiveSessions().Contains(sessionId))
+                return $"Session {sessionId} not found";
+
+            if (command.PartitionValue.ValueKind != JsonValueKind.Number
+                || !command.PartitionValue.TryGetInt32(out var number)
+                || number < 1)
+                return "activate_fap requires partition: a partition number of 1 or more";
+            if (number > byte.MaxValue || _panelState.GetPartition(sessionId, (byte)number) is null)
+                return $"Partition {number} is not a known partition of session {sessionId}";
+            partition = (byte)number;
+
+            if (command.FapTypeValue.ValueKind != JsonValueKind.String
+                || !_fapTypes.TryGetValue(command.FapTypeValue.GetString()!, out fapType))
+                return "activate_fap requires fap_type: \"fire\", \"auxiliary\" or \"panic\"";
+
+            return null;
         }
 
         /// <summary>
@@ -386,8 +485,19 @@ namespace NeoHub.Api.WebSocket
             }
         }
 
-        /// <summary>Sent in full_state so clients know which optional protocol features they can use.</summary>
+        /// <summary>
+        /// Sent in full_state so clients know which optional protocol features they can use, in this order. New
+        /// capabilities are appended here; "fap" always comes last (<see cref="CurrentCapabilities"/>).
+        /// </summary>
         private static readonly string[] _capabilities = { "command_result", "partition_ready", "partition_troubles" };
+
+        /// <summary>Advertised, last, only while AllowFapCommands is on.</summary>
+        internal const string FapCapability = "fap";
+
+        private static readonly string[] _capabilitiesWithFap = _capabilities.Append(FapCapability).ToArray();
+
+        private IReadOnlyList<string> CurrentCapabilities() =>
+            _fapSettings?.AllowFapCommands == true ? _capabilitiesWithFap : _capabilities;
 
         private static readonly JsonSerializerOptions _jsonOptions = new()
         {
@@ -432,6 +542,13 @@ namespace NeoHub.Api.WebSocket
         private void OnSessionsChanged()
         {
             _logger.LogDebug("Session list changed, broadcasting full_state to {Count} clients", 
+                _connectedClients.Keys.Count(c => c.State == WebSocketState.Open));
+            _ = BroadcastFullStateAsync();
+        }
+
+        private void OnFapSettingChanged()
+        {
+            _logger.LogInformation("FAP setting changed, broadcasting full_state to {Count} clients",
                 _connectedClients.Keys.Count(c => c.State == WebSocketState.Open));
             _ = BroadcastFullStateAsync();
         }

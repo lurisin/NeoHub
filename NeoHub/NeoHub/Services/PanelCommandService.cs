@@ -14,15 +14,27 @@ namespace NeoHub.Services
         private readonly IMediator _mediator;
         private readonly ILogger<PanelCommandService> _logger;
         private readonly IOptionsMonitor<PanelConnectionsSettings> _connectionSettings;
+        private readonly IFapCommandSettings? _fapSettings;
 
+        /// <summary>Without FAP settings: <see cref="ActivateFapAsync"/> always refuses.</summary>
         public PanelCommandService(
             IMediator mediator, 
             ILogger<PanelCommandService> logger,
             IOptionsMonitor<PanelConnectionsSettings> connectionSettings)
+            : this(mediator, logger, connectionSettings, fapSettings: null)
+        {
+        }
+
+        public PanelCommandService(
+            IMediator mediator,
+            ILogger<PanelCommandService> logger,
+            IOptionsMonitor<PanelConnectionsSettings> connectionSettings,
+            IFapCommandSettings? fapSettings)
         {
             _mediator = mediator;
             _logger = logger;
             _connectionSettings = connectionSettings;
+            _fapSettings = fapSettings;
         }
 
         private ConnectionSettings? GetConnection(string sessionId) =>
@@ -202,6 +214,44 @@ namespace NeoHub.Services
         }
 
         /// <summary>
+        /// The reply when a FAP command got no usable answer (no answer in time, or the session closed while it
+        /// waited): the panel may have raised the alarm, so nobody should resend it thinking nothing happened.
+        /// </summary>
+        public const string FapNoAnswerMessage = "No answer from the panel: the alarm may still have been triggered";
+
+        public async Task<PanelCommandResult> ActivateFapAsync(string sessionId, byte partition, FapType type)
+        {
+            using var inProgress = TrackCommand(sessionId);
+
+            if (_fapSettings?.AllowFapCommands != true)
+            {
+                _logger.LogWarning("FAP command not sent: {Reason}", ActivateFap.DisabledMessage);
+                return PanelCommandResult.Error(ActivateFap.DisabledMessage) with { NotSent = true };
+            }
+
+            // The WebSocket handler validates the request; this guards other callers. Never a default type or partition.
+            if (partition < 1 || !Enum.IsDefined(type))
+            {
+                _logger.LogWarning("FAP command not sent: invalid partition {Partition} or type {Type}", partition, (byte)type);
+                return PanelCommandResult.Error("Invalid FAP request") with { NotSent = true };
+            }
+
+            _logger.LogWarning(
+                "FAP command (experimental, raises a real alarm): Partition={Partition}, Type={Type}; sent once, never retried",
+                partition, type);
+
+            var result = await SendCommandAsync(sessionId, new ActivateFap { Partition = partition, Type = type }, FapNoAnswerMessage);
+
+            // A failure that is not a panel rejection, a NACK or a refusal before sending leaves it open whether the
+            // panel raised the alarm.
+            if (!result.Success && result.PanelResponseCode is null && !result.NotSent)
+                result = result with { UserMessage = FapNoAnswerMessage };
+
+            _logger.LogWarning("FAP command result: {Outcome}", result.Accepted ? "accepted by the panel" : result.DisplayMessage);
+            return result;
+        }
+
+        /// <summary>
         /// Longest wait for the panel's answer to one command sent by this service. The TLink receivers
         /// have no timeout of their own, so without this bound an unanswered command would wait forever.
         /// </summary>
@@ -210,7 +260,7 @@ namespace NeoHub.Services
         private static readonly string PanelAnswerTimeoutMessage =
             $"No confirmation from the panel within {PanelAnswerTimeout.TotalSeconds:0} s; check the partition state";
 
-        private async Task<PanelCommandResult> SendCommandAsync(string sessionId, IMessageData message)
+        private async Task<PanelCommandResult> SendCommandAsync(string sessionId, IMessageData message, string? noAnswerMessage = null)
         {
             using var timeout = new CancellationTokenSource(PanelAnswerTimeout);
             try
@@ -234,7 +284,7 @@ namespace NeoHub.Services
 
                 // SessionMediator turns the cancellation into a failed response, so check our own token.
                 if (timeout.IsCancellationRequested && !response.PanelResponseCode.HasValue)
-                    return PanelAnswerTimedOut(message);
+                    return PanelAnswerTimedOut(message, noAnswerMessage);
 
                 _logger.LogWarning("Command failed: [{Code}] {Error}", response.ErrorCode, response.ErrorMessage);
 
@@ -244,13 +294,14 @@ namespace NeoHub.Services
                         UserMessage = PanelRejectionText.ForResponseCode(code, armCommand: message is PartitionArm)
                     };
 
-                return response.ErrorCode.HasValue
+                var error = response.ErrorCode.HasValue
                     ? PanelCommandResult.Error(response.ErrorCode.Value, response.ErrorMessage ?? response.ErrorCode.Value.ToString())
                     : PanelCommandResult.Error(response.ErrorMessage ?? "Unknown error");
+                return response.NotSent ? error with { NotSent = true } : error;
             }
             catch (OperationCanceledException) when (timeout.IsCancellationRequested)
             {
-                return PanelAnswerTimedOut(message);
+                return PanelAnswerTimedOut(message, noAnswerMessage);
             }
             catch (Exception ex)
             {
@@ -259,12 +310,12 @@ namespace NeoHub.Services
             }
         }
 
-        private PanelCommandResult PanelAnswerTimedOut(IMessageData message)
+        private PanelCommandResult PanelAnswerTimedOut(IMessageData message, string? noAnswerMessage)
         {
             // The panel may still act on the command; a late answer is dropped by the session.
             _logger.LogWarning("No answer from the panel to {Command} within {Seconds} s",
                 message.GetType().Name, PanelAnswerTimeout.TotalSeconds);
-            return PanelCommandResult.Error(PanelAnswerTimeoutMessage) with { TimedOut = true };
+            return PanelCommandResult.Error(noAnswerMessage ?? PanelAnswerTimeoutMessage) with { TimedOut = true };
         }
     }
 }
