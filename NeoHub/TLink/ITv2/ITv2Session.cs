@@ -291,13 +291,14 @@ internal sealed class ITv2Session : IITv2Session
                 if (RouteToPendingReceiver(receiver => receiver.TryReceive(packet)))
                     continue;
 
-                // Discard unsolicited notifications during the initial message burst
+                // Discard unsolicited notifications during the initial message burst, except trouble details
                 if (!_sessionReady.Task.IsCompleted)
                 {
                     if (packet.Message is not SimpleAck)
                     {
                         LogUndecodedNotifications(packet.Message);
-                        _logger.LogDebug("Discarding pre-ready notification: {MessageType}", packet.Message.GetType().Name);
+                        if (!await PassOnConnectBurstTroublesAsync(packet.Message, ct))
+                            _logger.LogDebug("Discarding pre-ready notification: {MessageType}", packet.Message.GetType().Name);
                     }
                     continue;
                 }
@@ -352,6 +353,35 @@ internal sealed class ITv2Session : IITv2Session
             _logger.LogDebug("Publishing notification: {MessageType}", packet.Message.GetType().Name);
             await _notificationChannel.Writer.WriteAsync(packet.Message, ct);
         }
+    }
+
+    /// <summary>
+    /// Passes the trouble detail notifications (<see cref="TroubleDetailNotification"/>) of the initial burst on, marked
+    /// <see cref="TroubleDetailNotification.ReceivedInConnectBurst"/>, so the set of active troubles can follow them;
+    /// the rest of the burst is still discarded (for example a buffered keypad alarm must not be reported as new).
+    /// Returns true when the whole message was passed on, false when it, or part of it, is to be discarded.
+    /// </summary>
+    private async Task<bool> PassOnConnectBurstTroublesAsync(IMessageData message, CancellationToken ct)
+    {
+        if (message is TroubleDetailNotification trouble)
+        {
+            trouble.ReceivedInConnectBurst = true;
+            _logger.LogDebug("Passing on a pre-ready notification: {MessageType}", message.GetType().Name);
+            await _notificationChannel.Writer.WriteAsync(trouble, ct);
+            return true;
+        }
+
+        if (message is not MultipleMessagePacket multiMsg)
+            return false;
+
+        var troubles = multiMsg.Messages.OfType<TroubleDetailNotification>().ToList();
+        foreach (var subMessage in troubles)
+        {
+            subMessage.ReceivedInConnectBurst = true;
+            _logger.LogDebug("Passing on a pre-ready notification: {MessageType}", subMessage.GetType().Name);
+            await _notificationChannel.Writer.WriteAsync(subMessage, ct);
+        }
+        return troubles.Count > 0 && troubles.Count == multiMsg.Messages.Length;
     }
 
     private void LogUndecodedNotifications(IMessageData message)
