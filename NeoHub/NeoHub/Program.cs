@@ -77,6 +77,12 @@ namespace NeoHub
             builder.Services.AddSingleton<IConnectionSettingsProvider, ConnectionSettingsProvider>();
             builder.Services.AddHostedService<PartitionTroubleRefreshService>();
 
+            // FAP commands (experimental, off unless enabled in the settings): one source for the TLink gate,
+            // the command service and the WebSocket capability.
+            builder.Services.AddSingleton<FapCommandSettings>();
+            builder.Services.AddSingleton<IFapCommandSettings>(sp => sp.GetRequiredService<FapCommandSettings>());
+            builder.Services.AddSingleton<IFapCommandPolicy>(sp => sp.GetRequiredService<FapCommandSettings>());
+
             // WebSocket API
             builder.Services.AddSingleton<PanelWebSocketHandler>();
 
@@ -110,6 +116,7 @@ namespace NeoHub
             logger.LogInformation("NeoHub build {buildNumber} GitHub hash {hash} build datetime UTC {buildDateTime}", BuildInfo.BuildNumber, BuildInfo.GitCommit,  BuildInfo.BuildTimeUtc);
             // Force initialization
             app.Services.GetRequiredService<ISettingsDiscoveryService>();
+            app.Services.GetRequiredService<IFapCommandSettings>();
 
             app.UseWebSockets();
 

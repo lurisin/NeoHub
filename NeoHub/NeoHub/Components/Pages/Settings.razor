@@ -53,6 +53,10 @@
                 {
                     <div class="mt-3">
                         @RenderProperty(_section, property)
+                        @if (!string.IsNullOrEmpty(property.Warning))
+                        {
+                            <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-2">@property.Warning</MudAlert>
+                        }
                     </div>
                 }
             }

@@ -142,7 +142,8 @@ namespace NeoHub.Services.Settings
                 Order = displayAttr?.GetOrder() ?? int.MaxValue,
                 DefaultValue = GetDefaultValue(property),
                 IsRequired = requiredAttr != null,
-                IsSensitive = IsPasswordOrSensitive(property.Name)
+                IsSensitive = IsPasswordOrSensitive(property.Name),
+                Warning = property.GetCustomAttribute<SettingsWarningAttribute>()?.Text
             };
         }
 

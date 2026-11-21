@@ -29,5 +29,8 @@ namespace NeoHub.Services.Settings
         public object? DefaultValue { get; init; }
         public bool IsRequired { get; init; }
         public bool IsSensitive { get; init; }
+
+        /// <summary>Warning shown next to the setting (<see cref="SettingsWarningAttribute"/>), if any.</summary>
+        public string? Warning { get; init; }
     }
 }
