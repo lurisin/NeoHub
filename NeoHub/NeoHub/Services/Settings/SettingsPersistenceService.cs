@@ -82,6 +82,10 @@ namespace NeoHub.Services.Settings
                 await File.WriteAllTextAsync(SettingsFilePath, updatedJson);
 
                 _log.LogInformation("Saved settings for section {Section}", sectionName);
+
+                // Apply the saved file now instead of waiting for the file watcher (reloadOnChange), which can be
+                // slow or missing on some mounts; turning FAP commands off, for one, must not wait for it.
+                (_serviceProvider.GetService<IConfiguration>() as IConfigurationRoot)?.Reload();
             }
             finally
             {
