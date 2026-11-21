@@ -2,6 +2,7 @@ using DSC.TLink.ITv2;
 using DSC.TLink.ITv2.MediatR;
 using DSC.TLink.ITv2.Messages;
 using MediatR;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using NeoHub.Services.Models;
 using NeoHub.Services.Settings;
@@ -15,16 +16,21 @@ namespace NeoHub.Services
     /// session, once that pull has finished (<see cref="SessionState.IsInitialized"/>), this service re-reads
     /// <see cref="ModulePartitionStatus"/> for the session's partitions every
     /// <see cref="ConnectionSettings.TroubleRefreshIntervalSeconds"/> seconds (0 = off, at least
-    /// <see cref="ConnectionSettings.MinimumTroubleRefreshIntervalSeconds"/> otherwise) and updates only
-    /// <see cref="PartitionState.TroublesPresent"/> from it. Status, IsReady and the exit delay fields are never
-    /// changed here. <see cref="IPanelStateService.UpdatePartition"/> is called only when the flag changes, so a
-    /// read that finds no change sends nothing to clients.
+    /// <see cref="ConnectionSettings.MinimumTroubleRefreshIntervalSeconds"/> otherwise) and applies only its trouble
+    /// flag, through <see cref="PartitionConditionsService"/> (which also keeps the trouble types). Status, IsReady and
+    /// the exit delay fields are never changed here. A partition is announced only when what clients see of it
+    /// changed, so a read that finds no change sends nothing to clients.
     ///
     /// After an arm command is rejected with response code 1 (not ready to arm), the rejected partition is also
     /// read shortly afterwards (<see cref="ImmediateRefreshDelay"/>), in the background, so the command's result
     /// is not delayed. That read is skipped when the interval is 0, and is dropped if the partition is being
     /// read at that moment. If a command is waiting for the panel when it is due, it is tried again every
     /// <see cref="ImmediateRefreshDelay"/> until the command has finished.
+    ///
+    /// When a restored trouble detail leaves the set of active troubles empty
+    /// (<see cref="PartitionConditionsService.TroubleRereadRequested"/>), every partition of the session is read once
+    /// more <see cref="ExtraReadDelay"/> later, with the same rules as that re-read (skipped when the interval is 0,
+    /// kept while a command waits).
     ///
     /// Reads are sent one at a time per session, are skipped while a <see cref="IPanelCommandService"/> command,
     /// a configuration operation or installer programming is in progress on that session, and wait at most as
@@ -42,6 +48,12 @@ namespace NeoHub.Services
         internal static readonly TimeSpan ImmediateRefreshDelay = TimeSpan.FromMilliseconds(500);
 
         /// <summary>
+        /// Pause between a restored trouble detail that left the set of active troubles empty and the extra read it
+        /// triggers; a later one in the meantime moves the read. Not readonly so tests can lower it.
+        /// </summary>
+        internal static TimeSpan ExtraReadDelay = TimeSpan.FromSeconds(3);
+
+        /// <summary>
         /// Shortest interval used: a setting from 1 to 9 s counts as this, so a read is not outstanding almost all
         /// the time (a read takes about half a second per partition) and commands rarely overlap one.
         /// Not readonly so tests can lower it.
@@ -55,11 +67,17 @@ namespace NeoHub.Services
         private readonly ISessionMonitor _sessionMonitor;
         private readonly IOptionsMonitor<PanelConnectionsSettings> _settings;
         private readonly ILogger<PartitionTroubleRefreshService> _logger;
+        private readonly PartitionConditionsService _conditions;
 
         private readonly object _lock = new();
         private readonly Dictionary<string, SessionWorker> _workers = new();
         private bool _stopped;
 
+        /// <summary>
+        /// With its own <see cref="PartitionConditionsService"/>: the reads are applied the same way, but no extra read
+        /// follows a restored trouble detail (nothing else raises <see cref="PartitionConditionsService.TroubleRereadRequested"/>
+        /// on that instance).
+        /// </summary>
         public PartitionTroubleRefreshService(
             IMediator mediator,
             IPanelStateService panelState,
@@ -68,6 +86,20 @@ namespace NeoHub.Services
             ISessionMonitor sessionMonitor,
             IOptionsMonitor<PanelConnectionsSettings> settings,
             ILogger<PartitionTroubleRefreshService> logger)
+            : this(mediator, panelState, commands, sessionManager, sessionMonitor, settings, logger,
+                new PartitionConditionsService(panelState, settings, NullLogger<PartitionConditionsService>.Instance))
+        {
+        }
+
+        public PartitionTroubleRefreshService(
+            IMediator mediator,
+            IPanelStateService panelState,
+            IPanelCommandService commands,
+            IITv2SessionManager sessionManager,
+            ISessionMonitor sessionMonitor,
+            IOptionsMonitor<PanelConnectionsSettings> settings,
+            ILogger<PartitionTroubleRefreshService> logger,
+            PartitionConditionsService conditions)
         {
             _mediator = mediator;
             _panelState = panelState;
@@ -76,10 +108,12 @@ namespace NeoHub.Services
             _sessionMonitor = sessionMonitor;
             _settings = settings;
             _logger = logger;
+            _conditions = conditions;
 
             _panelState.SessionStateChanged += OnSessionStateChanged;
             _sessionMonitor.SessionsChanged += OnSessionsChanged;
             _commands.ArmRejectedNotReady += OnArmRejectedNotReady;
+            _conditions.TroubleRereadRequested += OnTroubleRereadRequested;
         }
 
         #region Lifecycle
@@ -123,6 +157,7 @@ namespace NeoHub.Services
             _panelState.SessionStateChanged -= OnSessionStateChanged;
             _sessionMonitor.SessionsChanged -= OnSessionsChanged;
             _commands.ArmRejectedNotReady -= OnArmRejectedNotReady;
+            _conditions.TroubleRereadRequested -= OnTroubleRereadRequested;
 
             lock (_lock)
             {
@@ -202,6 +237,29 @@ namespace NeoHub.Services
             worker.Wake();
         }
 
+        private void OnTroubleRereadRequested(object? sender, TroubleRereadRequestedEventArgs e)
+        {
+            SessionWorker? worker;
+            lock (_lock)
+                _workers.TryGetValue(e.SessionId, out worker);
+
+            if (worker is null)
+            {
+                _logger.LogDebug("No extra trouble read: session {SessionId} has no refresh running", e.SessionId);
+                return;
+            }
+
+            if (GetIntervalSeconds(worker.SessionId) <= 0)
+            {
+                _logger.LogDebug("No extra trouble read: trouble refresh is off");
+                return;
+            }
+
+            worker.ScheduleExtraRead(Environment.TickCount64 + (long)ExtraReadDelay.TotalMilliseconds);
+            _logger.LogDebug("Extra trouble read of every partition in {Delay} s: no active trouble detail left", ExtraReadDelay.TotalSeconds);
+            worker.Wake();
+        }
+
         /// <summary>Starts the worker for a session whose connect-time pull has finished, once per session state.</summary>
         private void EnsureWorker(string sessionId, SessionState session)
         {
@@ -251,9 +309,15 @@ namespace NeoHub.Services
                     {
                         nextRoundAt = null;
                         worker.ClearPending();
+                        worker.ScheduleExtraRead(null);
                     }
                     else if (nextRoundAt is null || nextRoundAt > now + intervalMs)
                         nextRoundAt = now + intervalMs;   // first round one interval after the connect-time pull
+
+                    // The extra read after a restored trouble detail: every partition, through the pending re-reads.
+                    var extraRead = intervalMs > 0 && worker.TakeExtraReadIfDue(now);
+                    if (extraRead)
+                        QueueAllPartitions(worker);
 
                     if (nextRoundAt is long due && now >= due)
                     {
@@ -266,15 +330,19 @@ namespace NeoHub.Services
                     var waitMs = nextRoundAt is long next
                         ? Math.Min(next - now, (long)SettingsRecheckInterval.TotalMilliseconds)
                         : (long)SettingsRecheckInterval.TotalMilliseconds;
+                    if (worker.ExtraReadDueAt is long extraDue)
+                        waitMs = Math.Min(waitMs, extraDue - now);
                     var retryPending = intervalMs > 0 && worker.HasPending();
                     if (retryPending)
                         waitMs = Math.Min(waitMs, (long)ImmediateRefreshDelay.TotalMilliseconds);
-                    var woken = await worker.Signal.WaitAsync(TimeSpan.FromMilliseconds(Math.Max(1, waitMs)), ct);
-                    if (intervalMs > 0 && (woken || retryPending))
+                    var woken = !extraRead
+                        && await worker.Signal.WaitAsync(TimeSpan.FromMilliseconds(Math.Max(1, waitMs)), ct);
+                    if (intervalMs > 0 && (woken || retryPending || extraRead))
                     {
-                        // Re-read requested after an arm rejection, or one that waited for a command to finish;
-                        // the periodic schedule is not moved.
-                        if (woken)
+                        // Re-read requested after an arm rejection, one that waited for a command to finish, or the
+                        // extra read after a restored trouble detail; the periodic schedule is not moved. A wake-up
+                        // with nothing pending only rescheduled the extra read.
+                        if (woken && worker.HasPending())
                             await Task.Delay(ImmediateRefreshDelay, ct);
                         foreach (var partition in worker.TakePending())
                         {
@@ -300,6 +368,24 @@ namespace NeoHub.Services
                     catch (OperationCanceledException) { break; }
                 }
             }
+        }
+
+        /// <summary>Queues every partition of the session as a pending re-read.</summary>
+        private void QueueAllPartitions(SessionWorker worker)
+        {
+            byte[] partitions;
+            try
+            {
+                partitions = _panelState.GetPartitions(worker.SessionId).Keys.ToArray();
+            }
+            catch (InvalidOperationException)
+            {
+                // The partition dictionary changed while it was copied; the next periodic round reads them all.
+                return;
+            }
+
+            lock (worker.Gate)
+                worker.Pending.UnionWith(partitions);
         }
 
         private async Task RunRoundAsync(SessionWorker worker, CancellationToken ct)
@@ -361,8 +447,8 @@ namespace NeoHub.Services
 
             try
             {
-                var (troubles, error, noAnswer, sessionClosed) = await ReadTroublesAsync(worker.SessionId, partition, ct);
-                if (troubles is not bool present)
+                var (status2, requestedAt, error, noAnswer, sessionClosed) = await ReadTroublesAsync(worker, partition, ct);
+                if (status2 is not ModulePartitionStatus.PartitionStatus2 answer)
                 {
                     if (sessionClosed || !IsSessionCurrent(worker))
                     {
@@ -377,7 +463,7 @@ namespace NeoHub.Services
                 }
 
                 ReportSuccess(worker, partition);
-                ApplyTroubles(worker, partition, present);
+                ApplyTroubles(worker, partition, answer, requestedAt);
                 return true;
             }
             finally
@@ -445,17 +531,22 @@ namespace NeoHub.Services
         }
 
         /// <summary>
-        /// Reads PartitionStatus2.TroublesPresent for one partition. Returns the flag, or null and the reason
-        /// when there is no usable answer; NoAnswer is true when the panel did not answer within
+        /// Reads PartitionStatus2 for one partition. Returns it with the request's place in the session's order of
+        /// reads and trouble details (<see cref="PartitionConditionsService.BeginStatusRead"/>), or null and the
+        /// reason when there is no usable answer; NoAnswer is true when the panel did not answer within
         /// <see cref="PanelCommandService.PanelAnswerTimeout"/>, SessionClosed when the session was closed while
         /// the read waited.
         /// </summary>
-        private async Task<(bool? Troubles, string? Error, bool NoAnswer, bool SessionClosed)> ReadTroublesAsync(string sessionId, byte partition, CancellationToken ct)
+        private async Task<(ModulePartitionStatus.PartitionStatus2? Status2, long RequestedAt, string? Error, bool NoAnswer, bool SessionClosed)> ReadTroublesAsync(
+            SessionWorker worker, byte partition, CancellationToken ct)
         {
+            var sessionId = worker.SessionId;
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(PanelCommandService.PanelAnswerTimeout);
+            long requestedAt = 0;
             try
             {
+                requestedAt = _conditions.BeginStatusRead(worker.State);
                 // WaitAsync keeps the bound even if a lower layer does not observe the token.
                 var response = await _mediator.Send(new SessionCommand
                 {
@@ -468,49 +559,47 @@ namespace NeoHub.Services
                 ct.ThrowIfCancellationRequested();
                 if (!response.Success)
                     return timeout.IsCancellationRequested
-                        ? (null, NoAnswerText, true, false)
-                        : (null, response.ErrorMessage ?? "request failed", false, response.ErrorCode == DSC.TLink.TLinkErrorCode.Cancelled);
+                        ? (null, requestedAt, NoAnswerText, true, false)
+                        : (null, requestedAt, response.ErrorMessage ?? "request failed", false, response.ErrorCode == DSC.TLink.TLinkErrorCode.Cancelled);
                 if (response.PanelNack is not null)
-                    return (null, $"refused by the panel interface (NACK: {response.PanelNack})", false, false);
+                    return (null, requestedAt, $"refused by the panel interface (NACK: {response.PanelNack})", false, false);
                 if (response.MessageData is not ModulePartitionStatus status)
-                    return (null, $"unexpected answer {response.MessageData?.GetType().Name ?? "(none)"}", false, false);
+                    return (null, requestedAt, $"unexpected answer {response.MessageData?.GetType().Name ?? "(none)"}", false, false);
                 if (status.Partition != partition)
-                    return (null, $"answer for partition {status.Partition}", false, false);
+                    return (null, requestedAt, $"answer for partition {status.Partition}", false, false);
                 if (status.PartitionStatus.Length < 2)
-                    return (null, "answer without the second status byte", false, false);
+                    return (null, requestedAt, "answer without the second status byte", false, false);
 
-                return (status.Status2.HasFlag(ModulePartitionStatus.PartitionStatus2.TroublesPresent), null, false, false);
+                return (status.Status2, requestedAt, null, false, false);
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
-                return (null, NoAnswerText, true, false);
+                return (null, requestedAt, NoAnswerText, true, false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                return (null, ex.Message, false, false);
+                return (null, requestedAt, ex.Message, false, false);
             }
         }
 
         private static readonly string NoAnswerText =
             $"no answer within {PanelCommandService.PanelAnswerTimeout.TotalSeconds:0} s";
 
-        /// <summary>Sets only TroublesPresent, and only broadcasts (through TryUpdatePartition) when it changed.</summary>
-        private void ApplyTroubles(SessionWorker worker, byte partition, bool troubles)
+        /// <summary>
+        /// Applies the read through <see cref="PartitionConditionsService"/>: only the trouble flag and what derives from
+        /// it, announced (through TryUpdatePartition, which never recreates a removed session) only when it changed.
+        /// </summary>
+        private void ApplyTroubles(SessionWorker worker, byte partition, ModulePartitionStatus.PartitionStatus2 status2, long requestedAt)
         {
             // Re-check after the await: never create a session or partition from here.
             if (!ReferenceEquals(_panelState.GetSession(worker.SessionId), worker.State))
                 return;
 
             var state = _panelState.GetPartition(worker.SessionId, partition);
-            if (state is null || state.TroublesPresent == troubles)
+            if (state is null)
                 return;
 
-            state.TroublesPresent = troubles;
-            // TryUpdatePartition does not recreate the session if it is removed (disconnect) right now.
-            if (!_panelState.TryUpdatePartition(worker.SessionId, state))
-                return;
-            _logger.LogInformation("Partition {Partition} troubles {Troubles}",
-                partition, troubles ? "present" : "cleared");
+            _conditions.ApplyStatusRead(worker.SessionId, worker.State, state, status2, requestedAt, StatusReadKind.Refresh, _logger);
         }
 
         /// <summary>
@@ -618,6 +707,33 @@ namespace NeoHub.Services
             {
                 lock (Gate)
                     Pending.Clear();
+            }
+
+            /// <summary>When the extra read after a restored trouble detail is due (Environment.TickCount64), if any.</summary>
+            public long? ExtraReadDueAt
+            {
+                get { lock (Gate) return _extraReadDueAt; }
+            }
+
+            private long? _extraReadDueAt;
+
+            /// <summary>Schedules the extra read, replacing one already scheduled; null cancels it.</summary>
+            public void ScheduleExtraRead(long? dueAt)
+            {
+                lock (Gate)
+                    _extraReadDueAt = dueAt;
+            }
+
+            /// <summary>True, once, when the extra read is due.</summary>
+            public bool TakeExtraReadIfDue(long now)
+            {
+                lock (Gate)
+                {
+                    if (_extraReadDueAt is not long due || now < due)
+                        return false;
+                    _extraReadDueAt = null;
+                    return true;
+                }
             }
 
             public void Cancel()

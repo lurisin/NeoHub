@@ -24,6 +24,9 @@ internal sealed class TestHost : IAsyncDisposable
 {
     public const string SessionId = "TESTSESSION";
 
+    /// <summary>The capabilities full_state lists, in order, while FAP commands are off ("fap" follows when on).</summary>
+    public static readonly string[] BaseCapabilities = { "command_result", "partition_ready", "partition_troubles", "trouble_types" };
+
     private static readonly MethodInfo ProcessMessage =
         typeof(PanelWebSocketHandler).GetMethod("ProcessMessageAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
 
@@ -82,6 +85,7 @@ internal sealed class TestHost : IAsyncDisposable
         services.AddSingleton<IPanelCommandService, PanelCommandService>();
         services.AddSingleton<ISessionMonitor, SessionMonitor>();
         services.AddSingleton<IConnectionSettingsProvider, NoConnectionSettings>();
+        services.AddSingleton<PartitionConditionsService>();
         services.AddSingleton(NullProxy.Create<IPanelConfigurationService>());
         services.AddSingleton<IITv2SessionManager, ITv2SessionManager>();
         services.AddSingleton<SessionMediator>();

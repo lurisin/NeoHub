@@ -3,6 +3,7 @@ using DSC.TLink.ITv2.Enumerations;
 using DSC.TLink.ITv2.MediatR;
 using DSC.TLink.ITv2.Messages;
 using MediatR;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using NeoHub.Services.Models;
 using NeoHub.Services.PanelConfiguration;
@@ -24,19 +25,34 @@ namespace NeoHub.Services.Handlers
         private readonly IPanelConfigurationService _configService;
         private readonly IOptionsMonitor<PanelConnectionsSettings> _connectionSettings;
         private readonly ILogger<PanelConfigurationHandler> _logger;
+        private readonly PartitionConditionsService _conditions;
 
+        /// <summary>With its own <see cref="PartitionConditionsService"/> (the conditions state is kept on the session state).</summary>
         public PanelConfigurationHandler(
             IMediator mediator,
             IPanelStateService panelState,
             IPanelConfigurationService configService,
             IOptionsMonitor<PanelConnectionsSettings> connectionSettings,
             ILogger<PanelConfigurationHandler> logger)
+            : this(mediator, panelState, configService, connectionSettings, logger,
+                new PartitionConditionsService(panelState, connectionSettings, NullLogger<PartitionConditionsService>.Instance))
+        {
+        }
+
+        public PanelConfigurationHandler(
+            IMediator mediator,
+            IPanelStateService panelState,
+            IPanelConfigurationService configService,
+            IOptionsMonitor<PanelConnectionsSettings> connectionSettings,
+            ILogger<PanelConfigurationHandler> logger,
+            PartitionConditionsService conditions)
         {
             _mediator = mediator;
             _panelState = panelState;
             _configService = configService;
             _connectionSettings = connectionSettings;
             _logger = logger;
+            _conditions = conditions;
         }
 
         public async Task Handle(SessionConnectedNotification notification, CancellationToken cancellationToken)
@@ -48,6 +64,9 @@ namespace NeoHub.Services.Handlers
             // since the connected notification fires early in the lifecycle.
             _panelState.UpdateSession(sessionId, s => s.ConnectionPhase = ConnectionPhase.Handshake);
             var session = _panelState.GetSession(sessionId)!;
+            // Trouble details only update the set of active troubles until this pull has read the partition status.
+            var conditionsSession = session;
+            _conditions.ConnectPullStarted(conditionsSession);
 
             // Acquire the config lock for the entire initialization sequence.
             // This prevents user-initiated operations from interleaving.
@@ -119,7 +138,8 @@ namespace NeoHub.Services.Handlers
 
                 // ── 3. Status reads (always) ──
                 _panelState.UpdateSession(sessionId, s => s.ConnectionPhase = ConnectionPhase.ReadingStatus);
-                await PullPartitionStatusAsync(sessionId, capabilities.MaxPartitions, cancellationToken);
+                await PullPartitionStatusAsync(sessionId, conditionsSession, capabilities.MaxPartitions, cancellationToken);
+                _conditions.ConnectPullStatusDone(sessionId, conditionsSession, _logger);
                 await PullZoneStatusAsync(sessionId, effectiveZones, cancellationToken);
 
                 _panelState.UpdateSession(sessionId, s => s.ConnectionPhase = ConnectionPhase.Connected);
@@ -136,6 +156,8 @@ namespace NeoHub.Services.Handlers
             }
             finally
             {
+                // Also when the pull ended early: trouble details turn the flags on from now on.
+                _conditions.ConnectPullStatusDone(sessionId, conditionsSession, _logger);
                 _panelState.UpdateSession(sessionId, s => s.IsInitialized = true);
                 session.ConfigLock.Release();
             }
@@ -277,7 +299,7 @@ namespace NeoHub.Services.Handlers
             _logger.LogInformation("Pulled partition labels");
         }
 
-        private async Task PullPartitionStatusAsync(string sessionId, int maxPartitions, CancellationToken ct)
+        private async Task PullPartitionStatusAsync(string sessionId, SessionState session, int maxPartitions, CancellationToken ct)
         {
             var config = _panelState.GetSession(sessionId)?.Configuration;
             var partEnables = config?.PartitionEnables.Values;
@@ -289,6 +311,7 @@ namespace NeoHub.Services.Handlers
                     && partition - 1 < partEnables.Count
                     && partEnables[partition - 1] != PanelConfiguration.Sections.PartitionEnable.Enabled)
                     continue;
+                var requestedAt = _conditions.BeginStatusRead(session);
                 var response = await RequestAsync<ModulePartitionStatus>(
                     sessionId,
                     new CommandRequestMessage
@@ -341,7 +364,8 @@ namespace NeoHub.Services.Handlers
                     && (s1.HasFlag(ModulePartitionStatus.PartitionStatus1.ReadyToArm)
                         || s1.HasFlag(ModulePartitionStatus.PartitionStatus1.ReadyToForceArm));
 
-                state.TroublesPresent = s2.HasFlag(ModulePartitionStatus.PartitionStatus2.TroublesPresent);
+                // The trouble flag (and the trouble types), with the rules shared with the re-reads.
+                _conditions.ApplyStatusRead(sessionId, session, state, s2, requestedAt, StatusReadKind.ConnectPull, _logger);
 
                 if (s1.HasFlag(ModulePartitionStatus.PartitionStatus1.ExitDelayInProgress))
                 {

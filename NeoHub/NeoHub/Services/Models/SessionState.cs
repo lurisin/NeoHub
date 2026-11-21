@@ -46,6 +46,11 @@ namespace NeoHub.Services.Models
         public SemaphoreSlim ConfigLock { get; } = new(1, 1);
 
         /// <summary>
+        /// Trouble details and the derived trouble flags (<see cref="NeoHub.Services.PartitionConditionsService"/>).
+        /// </summary>
+        public PanelConditionsState Conditions { get; } = new();
+
+        /// <summary>
         /// When this session was established.
         /// </summary>
         public DateTime ConnectedAt { get; set; } = DateTime.UtcNow;

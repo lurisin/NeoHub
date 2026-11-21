@@ -13,9 +13,19 @@ namespace NeoHub.Services.Models
         /// <summary>
         /// The panel reports one or more troubles for this partition (ModulePartitionStatus,
         /// PartitionStatus2.TroublesPresent). Set by the status pull when the session connects and
-        /// refreshed by <see cref="NeoHub.Services.PartitionTroubleRefreshService"/>.
+        /// refreshed by <see cref="NeoHub.Services.PartitionTroubleRefreshService"/>, through
+        /// <see cref="NeoHub.Services.PartitionConditionsService"/>, which also turns it on for every partition when
+        /// the panel reports a trouble detail.
         /// </summary>
         public bool TroublesPresent { get; set; }
+
+        /// <summary>
+        /// The active trouble types while <see cref="TroublesPresent"/> is set, empty otherwise: the labels of the
+        /// panel-wide set of active troubles (ModuleStatus_Trouble_Detail_Notification) in ordinal order, then
+        /// "unknown" when this partition's own status read reported troubles the set does not explain. Set by
+        /// <see cref="NeoHub.Services.PartitionConditionsService"/>; replaced, never changed in place.
+        /// </summary>
+        public IReadOnlyList<string> TroubleTypes { get; set; } = Array.Empty<string>();
 
         public PartitionStatus Status { get; set; } = PartitionStatus.Unknown;
         public DateTime LastUpdated { get; set; } = DateTime.UtcNow;

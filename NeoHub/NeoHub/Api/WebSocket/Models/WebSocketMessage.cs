@@ -116,6 +116,8 @@ namespace NeoHub.Api.WebSocket.Models
         public bool Ready { get; init; }
         /// <summary>The panel reports one or more troubles for the partition (PartitionState.TroublesPresent).</summary>
         public bool Troubles { get; init; }
+        /// <summary>The active trouble types while <see cref="Troubles"/> is set, otherwise empty (PartitionState.TroubleTypes).</summary>
+        public IReadOnlyList<string> TroubleTypes { get; init; } = Array.Empty<string>();
     }
 
     public record ZoneUpdateMessage : WebSocketMessage
@@ -173,6 +175,8 @@ namespace NeoHub.Api.WebSocket.Models
         public bool Ready { get; init; }
         /// <summary>The panel reports one or more troubles for the partition (PartitionState.TroublesPresent).</summary>
         public bool Troubles { get; init; }
+        /// <summary>The active trouble types while <see cref="Troubles"/> is set, otherwise empty (PartitionState.TroubleTypes).</summary>
+        public IReadOnlyList<string> TroubleTypes { get; init; } = Array.Empty<string>();
     }
 
     public record ZoneDto

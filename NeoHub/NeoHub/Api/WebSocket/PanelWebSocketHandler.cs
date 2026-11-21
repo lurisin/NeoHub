@@ -243,7 +243,8 @@ namespace NeoHub.Api.WebSocket
                                 Name = kvp.Value.DisplayName,
                                 Status = kvp.Value.EffectiveStatus,
                                 Ready = ReadyForClients(kvp.Value),
-                                Troubles = kvp.Value.TroublesPresent
+                                Troubles = kvp.Value.TroublesPresent,
+                                TroubleTypes = kvp.Value.TroubleTypes
                             })
                             .ToList(),
                         Zones = zones
@@ -489,7 +490,7 @@ namespace NeoHub.Api.WebSocket
         /// Sent in full_state so clients know which optional protocol features they can use, in this order. New
         /// capabilities are appended here; "fap" always comes last (<see cref="CurrentCapabilities"/>).
         /// </summary>
-        private static readonly string[] _capabilities = { "command_result", "partition_ready", "partition_troubles" };
+        private static readonly string[] _capabilities = { "command_result", "partition_ready", "partition_troubles", "trouble_types" };
 
         /// <summary>Advertised, last, only while AllowFapCommands is on.</summary>
         internal const string FapCapability = "fap";
@@ -571,14 +572,16 @@ namespace NeoHub.Api.WebSocket
             _logger.LogDebug("Broadcasting partition_update: Session={SessionId}, Partition={Partition}, Status={Status}, Ready={Ready}, Troubles={Troubles}",
                 e.SessionId, e.Partition.PartitionNumber, e.Partition.EffectiveStatus, ReadyForClients(e.Partition), e.Partition.TroublesPresent);
 
-            // Raised for every partition update, including a ready-status or trouble change with no status change.
+            // Raised for every partition update, including a ready-status, trouble or trouble type change with no status
+            // change.
             var message = new PartitionUpdateMessage
             {
                 SessionId = e.SessionId,
                 PartitionNumber = e.Partition.PartitionNumber,
                 Status = e.Partition.EffectiveStatus,
                 Ready = ReadyForClients(e.Partition),
-                Troubles = e.Partition.TroublesPresent
+                Troubles = e.Partition.TroublesPresent,
+                TroubleTypes = e.Partition.TroubleTypes
             };
 
             _ = BroadcastMessageAsync(message);

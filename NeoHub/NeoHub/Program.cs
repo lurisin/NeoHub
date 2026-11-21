@@ -75,6 +75,7 @@ namespace NeoHub
             builder.Services.AddSingleton<IPanelAccessCodeService, PanelAccessCodeService>();
             builder.Services.AddSingleton<ISessionMonitor, SessionMonitor>();
             builder.Services.AddSingleton<IConnectionSettingsProvider, ConnectionSettingsProvider>();
+            builder.Services.AddSingleton<PartitionConditionsService>();
             builder.Services.AddHostedService<PartitionTroubleRefreshService>();
 
             // FAP commands (experimental, off unless enabled in the settings): one source for the TLink gate,

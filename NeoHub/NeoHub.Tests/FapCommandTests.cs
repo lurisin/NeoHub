@@ -273,7 +273,7 @@ public class FapCommandTests
     {
         await using var host = await TestHost.StartAsync();
         var full = (await Send(host, """{"type":"get_full_state"}""")).Single();
-        Assert.Equal(new[] { "command_result", "partition_ready", "partition_troubles" }, Capabilities(full));
+        Assert.Equal(TestHost.BaseCapabilities, Capabilities(full));
 
         // Moving the switch on the Settings page without saving changes nothing.
         host.Services.GetRequiredService<IOptionsMonitor<ApplicationSettings>>().CurrentValue.AllowFapCommands = true;
@@ -283,7 +283,7 @@ public class FapCommandTests
         host.SaveAllowFap(true);
         Assert.True(await TestHost.WaitUntil(() => host.Client.FramesSince(n).Any(f => f.Contains("\"full_state\""))));
         var pushed = host.Client.FramesSince(n).Single(f => f.Contains("\"full_state\""));
-        Assert.Equal(new[] { "command_result", "partition_ready", "partition_troubles", "fap" }, Capabilities(pushed));
+        Assert.Equal(TestHost.BaseCapabilities.Append("fap"), Capabilities(pushed));
 
         n = host.Client.Count;
         host.SaveAllowFap(false);
