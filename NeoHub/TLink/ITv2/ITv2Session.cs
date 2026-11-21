@@ -73,6 +73,9 @@ internal sealed class ITv2Session : IITv2Session
     // Only touched by the receive pump.
     private readonly HashSet<ITv2Command> _reportedUndecodedCommands = new();
 
+    // Set once by the first DisposeAsync or AbandonAsync; later calls return at once.
+    private int _disposed;
+
     private ITv2Session(
         ITLinkTransport transport,
         IConnectionSettingsProvider settingsProvider,
@@ -315,7 +318,8 @@ internal sealed class ITv2Session : IITv2Session
         }
         finally
         {
-            _notificationChannel.Writer.Complete();
+            // TryComplete: DisposeAsync may have completed the channel already.
+            _notificationChannel.Writer.TryComplete();
         }
     }
 
@@ -640,9 +644,20 @@ internal sealed class ITv2Session : IITv2Session
 
     #region Disposal
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync() => DisposeCoreAsync(sendEndSession: true);
+
+    public ValueTask AbandonAsync() => DisposeCoreAsync(sendEndSession: false);
+
+    private async ValueTask DisposeCoreAsync(bool sendEndSession)
     {
-        if (_sessionReady.Task.IsCompletedSuccessfully)
+        // Idempotent: the connection handler disposes the session when its loop ends, also after the session
+        // manager or the UI has already disposed or abandoned it.
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
+
+        if (!sendEndSession)
+            _logger.LogInformation("Closing the connection without END_SESSION (replaced by a newer connection)");
+        else if (_sessionReady.Task.IsCompletedSuccessfully)
         {
             try
             {
@@ -661,7 +676,7 @@ internal sealed class ITv2Session : IITv2Session
         _shutdownCts.Cancel();
 
         _readyTimer?.Dispose();
-        _notificationChannel.Writer.Complete();
+        _notificationChannel.Writer.TryComplete();
 
         lock (_pendingReceiversLock)
         {
@@ -670,8 +685,9 @@ internal sealed class ITv2Session : IITv2Session
             _pendingReceivers.Clear();
         }
 
-        _sendLock.Dispose();
-        _shutdownCts.Dispose();
+        // _sendLock and _shutdownCts are not disposed: neither holds a timer or wait handle here, and a send that
+        // reaches a closed session (a command racing a takeover or a disconnect) then fails with a cancellation
+        // instead of an ObjectDisposedException.
         _encryption?.Dispose();
         _sessionScope?.Dispose();
 

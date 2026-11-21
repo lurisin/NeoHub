@@ -37,4 +37,13 @@ internal interface IITv2Session : IAsyncDisposable
     /// MultipleMessagePackets are expanded — individual sub-messages are yielded.
     /// </summary>
     IAsyncEnumerable<IMessageData> GetNotificationsAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Ends the session like <see cref="IAsyncDisposable.DisposeAsync"/>, but without sending END_SESSION.
+    /// Used for a connection that a newer connection with the same session id has replaced: the panel has
+    /// moved to the new connection, and an END_SESSION on the old one must not reach the panel's session.
+    /// The notification stream ends, waiting sends fail, and the transport is closed. Later calls of either
+    /// method do nothing.
+    /// </summary>
+    ValueTask AbandonAsync();
 }
