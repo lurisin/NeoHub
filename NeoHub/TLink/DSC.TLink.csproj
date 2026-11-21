@@ -42,4 +42,8 @@
 	  <Folder Include="Configuration\" />
 	</ItemGroup>
 
+	<ItemGroup>
+	  <InternalsVisibleTo Include="NeoHub.Tests" />
+	</ItemGroup>
+
 </Project>
