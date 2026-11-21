@@ -37,6 +37,51 @@ namespace DSC.TLink.Serialization
             bytes.AddRange(fullBytes.AsSpan(startIndex));
         }
 
+        /// <summary>
+        /// Reads one compact integer (<c>[length][value, big-endian]</c>) without converting it: <paramref name="value"/>
+        /// holds the value bytes exactly as received. Stricter than <see cref="Read"/>: false, and the offset unchanged,
+        /// for a zero length or when the payload ends before the value does.
+        /// </summary>
+        internal static bool TryReadValueBytes(ReadOnlySpan<byte> bytes, ref int offset, out byte[] value)
+        {
+            value = Array.Empty<byte>();
+            if (offset >= bytes.Length)
+                return false;
+
+            int length = bytes[offset];
+            if (length == 0 || offset + 1 + length > bytes.Length)
+                return false;
+
+            value = bytes.Slice(offset + 1, length).ToArray();
+            offset += 1 + length;
+            return true;
+        }
+
+        /// <summary>
+        /// <see cref="TryReadValueBytes"/> for a non-negative number that fits in an int (for example a partition):
+        /// false as well when the value is too large.
+        /// </summary>
+        internal static bool TryReadInt32(ReadOnlySpan<byte> bytes, ref int offset, out int value)
+        {
+            value = 0;
+            var start = offset;
+            if (!TryReadValueBytes(bytes, ref offset, out var raw))
+                return false;
+
+            long result = 0;
+            foreach (var b in raw)
+            {
+                result = (result << 8) | b;
+                if (result > int.MaxValue)
+                {
+                    offset = start;
+                    return false;
+                }
+            }
+            value = (int)result;
+            return true;
+        }
+
         internal static object Read(ReadOnlySpan<byte> bytes, ref int offset, Type propertyType)
         {
             if (offset >= bytes.Length)
