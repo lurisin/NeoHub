@@ -33,4 +33,10 @@ public record SessionResponse
 
     /// <summary>Numeric ITv2 NACK code of that <c>Command_Error</c> (see <see cref="PanelNack"/>). Null otherwise.</summary>
     public int? PanelNackCode { get; init; }
+
+    /// <summary>
+    /// True when the command was refused before anything was sent to the panel (session not found, or a FAP command
+    /// while FAP commands are disabled). For other failures the command may have reached the panel.
+    /// </summary>
+    public bool NotSent { get; init; }
 }

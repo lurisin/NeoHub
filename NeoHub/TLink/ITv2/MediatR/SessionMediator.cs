@@ -15,15 +15,29 @@ namespace DSC.TLink.ITv2.MediatR
         private readonly IMediator _mediator;
         private readonly IITv2SessionManager _sessionManager;
         private readonly ILogger<SessionMediator> _logger;
+        private readonly IFapCommandPolicy[] _fapPolicies;
+
+        /// <summary>The text of a refused <see cref="ActivateFap"/>.</summary>
+        public const string FapDisabledMessage = "FAP commands are disabled in the NeoHub settings";
 
         public SessionMediator(
             IMediator mediator,
             IITv2SessionManager sessionManager,
             ILogger<SessionMediator> logger)
+            : this(mediator, sessionManager, logger, Array.Empty<IFapCommandPolicy>())
+        {
+        }
+
+        public SessionMediator(
+            IMediator mediator,
+            IITv2SessionManager sessionManager,
+            ILogger<SessionMediator> logger,
+            IEnumerable<IFapCommandPolicy> fapPolicies)
         {
             _mediator = mediator;
             _sessionManager = sessionManager;
             _logger = logger;
+            _fapPolicies = fapPolicies.ToArray();
         }
 
         #region Command Handling (Outbound from Blazor UI)
@@ -33,6 +47,20 @@ namespace DSC.TLink.ITv2.MediatR
             CancellationToken cancellationToken)
         {
             var failureLevel = request.LogFailuresAtDebug ? LogLevel.Debug : LogLevel.Warning;
+
+            // Every command to a panel goes through here (web UI, WebSocket API, Dev Console, background reads),
+            // so this is where a FAP command is stopped unless a policy allows it. Fails closed: no policy, no FAP.
+            if (CarriesFap(request.MessageData) && !_fapPolicies.Any(p => p.AllowFapCommands))
+            {
+                _logger.LogWarning("Refused to send ModuleControl_Activate_FAP: {Reason}", FapDisabledMessage);
+                return new SessionResponse
+                {
+                    Success = false,
+                    ErrorMessage = FapDisabledMessage,
+                    NotSent = true
+                };
+            }
+
             var session = _sessionManager.GetSession(request.SessionID);
             if (session == null)
             {
@@ -41,7 +69,8 @@ namespace DSC.TLink.ITv2.MediatR
                 {
                     Success = false,
                     ErrorCode = TLinkErrorCode.SessionNotFound,
-                    ErrorMessage = $"Session {request.SessionID} not found"
+                    ErrorMessage = $"Session {request.SessionID} not found",
+                    NotSent = true
                 };
             }
 
@@ -118,6 +147,20 @@ namespace DSC.TLink.ITv2.MediatR
                 };
             }
         }
+
+        /// <summary>
+        /// True when sending the message would put ModuleControl_Activate_FAP on the wire: an <see cref="ActivateFap"/>
+        /// (the only type registered for that command word), also wrapped in a request or a multiple-message packet.
+        /// </summary>
+        internal static bool CarriesFap(IMessageData? message) => message switch
+        {
+            null => false,
+            ActivateFap => true,
+            CommandRequestMessage request => CarriesFap(request.Request),
+            MultipleMessagePacket multiple => multiple.Messages.Any(CarriesFap),
+            DefaultMessage undecoded => undecoded.Command == ITv2Command.ModuleControl_Activate_FAP,
+            _ => false,
+        };
 
         /// <summary>
         /// The TLink description of a response code. A code the enum does not define has no description, and

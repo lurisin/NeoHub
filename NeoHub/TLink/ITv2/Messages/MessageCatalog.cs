@@ -32,9 +32,17 @@ public static class MessageCatalog
     /// <summary>
     /// Returns only the types that can be sent as outbound commands — i.e., subclasses of
     /// <see cref="CommandMessageBase"/>. These are the only types useful to send from a dev console.
+    /// Commands in <see cref="NotForTools"/> are left out.
     /// </summary>
     public static IReadOnlyList<MessageTypeInfo> GetSendable() =>
-        _all.Where(m => typeof(CommandMessageBase).IsAssignableFrom(m.MessageType)).ToList();
+        _all.Where(m => typeof(CommandMessageBase).IsAssignableFrom(m.MessageType) && !NotForTools.Contains(m.Command))
+            .ToList();
+
+    /// <summary>
+    /// Commands that development tools must not offer: ModuleControl_Activate_FAP raises a real alarm reported to the
+    /// monitoring station (see <see cref="ActivateFap"/>).
+    /// </summary>
+    public static IReadOnlySet<ITv2Command> NotForTools { get; } = new HashSet<ITv2Command> { ITv2Command.ModuleControl_Activate_FAP };
 
     /// <summary>
     /// Returns user-editable properties for a message type.
