@@ -222,6 +222,26 @@ Once the panel has been configured, return to the NeoHub web UI. If everything i
 - ✅ **Event-driven architecture** — No polling, all updates triggered by actual panel events
 - ✅ **Responsive design** — Works on desktop, tablet, and mobile
 
+### Command results for WebSocket clients
+
+A command sent with a `request_id` gets one `command_result` back. When the panel did not carry the command out, `code` is the panel's number and `code_kind` says which numbering it belongs to: `"response"` (a panel rejection, `Command_Response`) or `"nack"` (the panel interface refused it, `Command_Error`). The two numberings overlap with different meanings. Both are `null` when there is no panel code (session not found, invalid request, no answer in time). `message` is a short English text, for example "Invalid access code", "Panel busy" or "Keypad locked out"; response code 1 reads "Partition not ready to arm" only for arm commands. Commands without `request_id` are answered exactly as before.
+
+### Experimental: FAP commands (Fire / Auxiliary / Panic)
+
+> **Warning:** a FAP command raises a **real alarm**. The panel sounds it and reports it to the monitoring station.
+
+The WebSocket message `activate_fap` asks the panel to raise a Fire, Auxiliary or Panic alarm on a partition, as the F / A / P keys of a keypad do:
+
+```json
+{"type":"activate_fap","session_id":"<session>","partition":1,"fap_type":"fire","request_id":"<id>"}
+```
+
+- **Off by default.** Turn on **Allow FAP commands** on the Settings page (Application Settings, "Panel control") and save. While it is off, `activate_fap` is refused and nothing is sent to the panel. The `fap` capability in `full_state` is listed only while it is on, and NeoHub pushes a new `full_state` when the setting changes. Turn it on only for a test agreed with the monitoring station, and off again afterwards.
+- All fields are required: `partition` must be a known partition of the session, and `fap_type` must be exactly `fire`, `auxiliary` or `panic`. Anything else is refused before any panel traffic.
+- The command is sent **once** and never retried. With no answer from the panel the reply is "No answer from the panel: the alarm may still have been triggered". Check the panel before you send it again.
+- There is no FAP button in the web UI, and the Dev Console does not offer the command.
+- **Untested on a real panel.** The message layout (`[sequence][partition][type]`, fire 0, auxiliary 1, panic 2, no access code) comes from another open-source ITv2 integration (LawPaul/HA_DSC_Neo_ITv2). The panel's reply is undocumented, and the auxiliary and panic keys may be disabled in the panel's programming.
+
 ---
 
 ## 🔌 Ports
@@ -268,6 +288,10 @@ For more details about the DSC ITv2 (TLink) protocol, see:
 - The panel has connected but hasn't sent partition status yet
 - This is normal on first connection — wait a few seconds
 - Partition status is broadcast automatically by the panel every few minutes
+
+### "Session replaced by a newer connection" in the log
+
+The panel opened a new connection before NeoHub noticed that the old one was gone. The new connection takes over: NeoHub closes the old one without END_SESSION, keeps the partition and zone state, and reads the panel status again. Commands go to the new connection. When the old connection is torn down, nothing is removed.
 
 ### Encryption errors in logs
 
