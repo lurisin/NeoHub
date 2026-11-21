@@ -30,4 +30,7 @@ public record SessionResponse
     /// Null otherwise.
     /// </summary>
     public string? PanelNack { get; init; }
+
+    /// <summary>Numeric ITv2 NACK code of that <c>Command_Error</c> (see <see cref="PanelNack"/>). Null otherwise.</summary>
+    public int? PanelNackCode { get; init; }
 }

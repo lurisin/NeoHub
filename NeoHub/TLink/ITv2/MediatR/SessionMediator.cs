@@ -61,13 +61,14 @@ namespace DSC.TLink.ITv2.MediatR
 
                 if (result.Value is CommandResponse { ResponseCode: not CommandResponseCode.Success } errorResponse)
                 {
+                    var description = DescribeResponseCode(errorResponse.ResponseCode);
                     _logger.Log(failureLevel, "Panel rejected command: [{Code}] {Description}",
-                        errorResponse.ResponseCode, errorResponse.ResponseCode.Description());
+                        errorResponse.ResponseCode, description);
 
                     return new SessionResponse
                     {
                         Success = false,
-                        ErrorMessage = errorResponse.ResponseCode.Description(),
+                        ErrorMessage = description,
                         PanelResponseCode = (int)errorResponse.ResponseCode,
                     };
                 }
@@ -83,7 +84,8 @@ namespace DSC.TLink.ITv2.MediatR
                     {
                         Success = true,
                         MessageData = result.Value,
-                        PanelNack = nack.NackCode.ToString()
+                        PanelNack = nack.NackCode.ToString(),
+                        PanelNackCode = (int)nack.NackCode
                     };
                 }
 
@@ -114,6 +116,24 @@ namespace DSC.TLink.ITv2.MediatR
                     Success = false,
                     ErrorMessage = ex.Message
                 };
+            }
+        }
+
+        /// <summary>
+        /// The TLink description of a response code. A code the enum does not define has no description, and
+        /// Description() throws for it; that exception used to end the command, its message becoming the error text.
+        /// The text stays the same, so replies without request_id do not change, but the code is now reported as a
+        /// panel response code.
+        /// </summary>
+        private static string DescribeResponseCode(CommandResponseCode code)
+        {
+            try
+            {
+                return code.Description();
+            }
+            catch (InvalidOperationException ex)
+            {
+                return ex.Message;
             }
         }
 
