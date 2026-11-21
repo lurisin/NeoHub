@@ -50,10 +50,23 @@ This fork is upstream `master` (61a1a0e) plus these commits, in this order:
 | `Log the first unexpected trouble refresh error at Warning` | Draft PR (section E) |
 | `Explain why the trouble refresh also checks ConfigLock` | Draft PR (section E) |
 | `Update upstream PR draft E after the second review` | Fork only, never submit |
+| `Add an xUnit test project for NeoHub and DSC.TLink` | Optional; the tests of sections F, G and H need it (upstream has no test project) |
+| `Make closing an ITv2Session idempotent and add AbandonAsync` | Draft PR (section F) |
+| `Let the newest panel connection take over its session id` | Draft PR (section F) |
+| `Add English texts for panel response and NACK codes` | Draft PR (section G) |
+| `Report code_kind and the new rejection texts in command_result` | Draft PR (section G) |
+| `Add the ModuleControl_Activate_FAP message behind a fail-closed gate` | Draft PR (section H, experimental) |
+| `Add the AllowFapCommands application setting, off by default` | Draft PR (section H) |
+| `Add the experimental activate_fap WebSocket command` | Draft PR (section H) |
+| `Document command results, FAP commands and the session takeover` | README parts of sections F, G and H |
+| `Add upstream PR drafts F, G and H` | Fork only, never submit |
 
-Section C records why panic / fire / auxiliary activation (`ModuleControl_Activate_FAP`, 0x0908) is not proposed.
+Section C is the research record for fire / auxiliary / panic activation (`ModuleControl_Activate_FAP`, 0x0908). It is now implemented, gated and experimental, as section H.
 Section D is a separate draft PR (command results, panel response codes, an 8 s bound on the panel's answer, partition ready state). It builds on section A.
 Section E is a separate draft PR (partition trouble flag kept current and sent to clients, log of undecoded panel notifications). It builds on section D.
+Section F is a separate draft PR (an overlapping panel reconnect no longer loses the session). It fixes an upstream bug and does not depend on A, D or E apart from small hand merges.
+Section G is a separate draft PR (texts for panel response and NACK codes, `code_kind` in `command_result`). It builds on section D.
+Section H is a separate draft PR (experimental FAP command, off unless enabled in the settings). It builds on sections D and G.
 
 ---
 
@@ -171,9 +184,9 @@ Checklist:
 
 ---
 
-## C. Not proposed: ModuleControl_Activate_FAP (0x0908)
+## C. ModuleControl_Activate_FAP (0x0908): research record
 
-**Decision: not implemented and not proposed upstream.** No reliable source (working code with a verifiable origin, or protocol documentation) gives the payload of 0x0908. Sending a guessed layout could report the wrong emergency type to the monitoring station.
+**Decision history.** At first (in the fork's original brief) this was not implemented and not proposed upstream, because no reliable source (working code with a verifiable origin, or protocol documentation) gives the payload of 0x0908, and a guessed layout could report the wrong emergency type to the monitoring station. The owner then decided (addendum 4) to implement LawPaul's layout as an **experimental** command, off by default behind a NeoHub setting, sent once and never retried, and to test it only with the monitoring station on test. That implementation is section H. The findings below still hold: the layout is unverified, and a wrong layout or type byte may fail silently or report the wrong event.
 
 ### What exists
 
@@ -556,3 +569,197 @@ Untested:
 - [ ] Decide whether the `Co-Authored-By` / `Claude-Session` trailers stay in the commit messages sent upstream.
 - [ ] Do the local test with the owner present: unplug the panel's AC power (or wait for a real trouble) and watch `troubles` turn true within the interval and false after it clears; arm during the trouble with no zone open and note the response code; check the NeoHub log for "Undecoded panel notification" lines. Update "Test evidence" and "Untested".
 - [ ] Check the PR text, logs and screenshots for personal data: no names, addresses, panel or installer IDs, IP addresses, session IDs or access codes.
+
+---
+
+## F. An overlapping panel reconnect no longer loses the session
+
+- **Proposed title:** `Let the newest panel connection take over its session id`
+- **Base branch:** `master`. It fixes an upstream bug of the same family as PR #45 (a teardown that removes the wrong
+  thing after an overlapping reconnect) and needs none of sections A, D or E.
+- **Commits to cherry-pick, in this order:**
+  1. `Make closing an ITv2Session idempotent and add AbandonAsync`
+  2. `Let the newest panel connection take over its session id`
+  The tests in both commits need `Add an xUnit test project for NeoHub and DSC.TLink`; see "Dependency".
+- **Dependency:** in a scratch clone, onto upstream `master` 61a1a0e plus the test project commit, these two commits need
+  three small hand merges: (1) in `ITv2Session.cs` commit 1 conflicts with the context of section E's undecoded-
+  notification field (keep only the new `_disposed` field); (2) commit 2's `SessionMediator` hunk uses section E's
+  `failureLevel` (use `LogLevel.Warning` instead); (3) commit 2 touches `PartitionTroubleRefreshService`, which only
+  section E adds (drop that hunk). With those, `NeoHub` and `DSC.TLink` build with 0 errors and the same 14 warnings
+  as 61a1a0e. The test project's helpers use section D and E members (`RedactAccessCodes`, `IsCommandInProgress`,
+  `TroubleRefreshIntervalSeconds`), so without them the tests need trimming: drop the trouble refresh from the test
+  host and the trouble-read test.
+- **TLink is touched:** `IITv2Session` (internal) gains `AbandonAsync()`. In `IITv2SessionManager`, the internal
+  member `UnregisterSession(sessionId)` becomes `UnregisterSession(sessionId, session)`, and `IsCurrentSession` is new.
+  `SessionConnectedNotification` gains `bool ReplacedConnection { get; init; }`. The connection loop moves into the
+  internal `ITv2ConnectionHandler.RunSessionAsync`. No public member is removed. Say this in the PR.
+
+### PR body
+
+````markdown
+## Summary
+
+When a panel reconnects before NeoHub notices that its previous TCP connection is gone, the new connection now takes over the session id. Before, the new connection was never registered, and the old connection's teardown then removed the session for good. The panel stayed connected, but NeoHub had no session for it until the next reconnect, which could be hours later.
+
+## The bug (reproduced on master's code)
+
+`ITv2SessionManager.RegisterSession` used `TryAdd`. For the second connection with the same id it only logged "Session already registered". When the old connection ended, the connection handler's `finally` called `UnregisterSession(sessionId)`. That removed the registration (the new connection's id) and published `SessionDisconnectedNotification`, and the lifecycle handler removed the session state. From then on:
+
+- every client command failed with "Session <id> not found", as a `command_result` or an `error`;
+- `full_state` listed no session;
+- the new connection's notifications still reached the handlers. Clients got `zone_update` and `partition_update` for a session that `full_state` did not list, and a partial state was recreated (one zone, one partition, not initialised). No connect pull and no other per-session work ran for it.
+
+A command sent while both connections overlapped went to the stale connection and failed when that connection was torn down ("A task was canceled." in our test).
+
+A test reproduced this with two simulated connections with the same id, the real MediatR handlers and the real WebSocket handler. A real log showed the same sequence: "Session already registered", later "Session unregistered. Active sessions: 0" and "Removed session state", while the panel stayed connected on the new connection.
+
+## Changes
+
+- **Takeover:** `RegisterSession` replaces a registered session object with the same id (Warning "Session replaced by a newer connection"). It closes the old one with the new `AbandonAsync`, which ends its loop without sending END_SESSION; that connection is stale, and an END_SESSION on it must not reach the panel's session. It then publishes `SessionConnectedNotification` with `ReplacedConnection = true`, so the connect pull runs again on the new connection. The session state is kept, so clients see no gap; the pull refreshes it. The lifecycle handler resets the state's programming mode flag and connect time on a takeover.
+- **Compare-and-remove:** `UnregisterSession(sessionId, session)` removes the registration only while that exact session object still owns it, and only then publishes `SessionDisconnectedNotification`. The old connection's teardown after a takeover removes and publishes nothing.
+- **Ordered lifecycle:** lifecycle notifications used to be published from an `async void` method. They are now queued per session id, in the order of the registration changes, and each runs after the handlers of the previous one have finished (the Connected handlers include the connect pull). A Disconnected of an old connection therefore completes before the Connected of a newer one starts. `DisconnectSessionAsync` (UI) queues its Disconnected when it removes the registration, not after the dispose, which can take up to 2 s for END_SESSION.
+- **Stale notifications dropped:** the connection loop publishes a notification only while its session owns the registration, so a replaced or UI-disconnected connection cannot recreate state.
+- **Clean close:** `ITv2Session.DisposeAsync` was not idempotent. The handler's `await using` disposes the session again after the UI disposed it, which threw from the disposed `CancellationTokenSource` and sent END_SESSION twice. The pump and dispose both called `ChannelWriter.Complete()`, so the second call threw; from the pump, that exception sat unobserved on a discarded task. Now the first `DisposeAsync` / `AbandonAsync` does the work, both completions use `TryComplete`, and the send lock and shutdown token source are no longer disposed, so a send that reaches a closed session fails as a cancellation.
+- **Quieter failures:** a command cancelled because its session closed while it waited returns `ErrorCode = Cancelled` (a failed transport send keeps `Disconnected`) and logs a Warning instead of an Error with a stack trace. Its message is unchanged.
+
+## Compatibility
+
+- WebSocket messages are unchanged.
+- The UI "Disconnect" still disposes the session (with END_SESSION) and removes its state once.
+- After a takeover, commands go to the new connection right away; the old one gets nothing more.
+
+## Test evidence
+
+xUnit tests (new test project) with the real session manager, MediatR, handlers, state, command and WebSocket services, and with fake and real `ITv2Session`s on a fake transport:
+
+- **Overlapping reconnect:** the new session is registered with the same state object; the old one is abandoned and its loop ends. No `full_state` without the session is sent. The connect pull runs on the new connection. A command goes to the new connection. The old teardown removes nothing. A later normal disconnect removes the state once.
+- **Takeover in the middle of the connect pull:** the state ends complete and initialised, and no Error is logged.
+- **Ordering:** with a slow extra lifecycle handler, events run in the order connected, disconnected, connected, each one completing before the next starts.
+- **UI disconnect:** it removes the state once. A reconnect during the slow dispose keeps the new state.
+- **Clean close of a real session:** `AbandonAsync` sends no END_SESSION. A second dispose sends no second END_SESSION. The pump never faults. A send after close fails as a cancellation.
+- **Soak:** 40 rapid connect / takeover / disconnect cycles with fake sessions, and 40 with real sessions. Afterwards: no session, no state, no queued lifecycle work, every session closed, every pump completed, no Error logs and no unobserved task exceptions.
+
+## Untested
+
+- A real panel reconnecting while its old TCP connection is still open (seen once in a real log; the exact timing cannot be provoked on purpose).
+- Whether a real communicator reacts to NeoHub closing the stale TCP connection without END_SESSION. Nothing should happen, because the panel already uses the new connection.
+````
+
+### Checklist for the owner before submitting
+
+- [ ] The owner has given an explicit OK to open this PR.
+- [ ] Decide whether the test project goes in (its own small PR first, or with this one), and trim the tests as
+      described under "Dependency" if sections D and E are not upstream.
+- [ ] Apply the hand merges listed under "Dependency" on a dedicated branch from the current upstream `master`, and
+      rebuild.
+- [ ] Decide whether the `Co-Authored-By` / `Claude-Session` trailers stay in the commit messages sent upstream.
+- [ ] Check the PR text for personal data (no names, addresses, panel IDs, IP addresses, session IDs or codes).
+
+---
+
+## G. Texts for panel response and NACK codes, and `code_kind` in `command_result`
+
+- **Proposed title:** `command_result: say which numbering "code" uses, and give each code a short text`
+- **Base branch:** `master`, after section D (it extends D's `command_result`, `PanelResponseCode` and NACK reporting).
+- **Commits to cherry-pick, in this order:**
+  1. `Add English texts for panel response and NACK codes`
+  2. `Report code_kind and the new rejection texts in command_result`
+  The tests need the test project commit and use section F's test helpers; without F, drop those tests or port the
+  helpers.
+- **TLink is touched:** new public static class `PanelRejectionText`. `SessionResponse` gains `int? PanelNackCode`.
+  `SessionMediator` reports a response code that the enum does not define as a panel response code, where it used to
+  throw while looking up the description; the error text stays the same.
+
+### PR body
+
+````markdown
+## Summary
+
+- `command_result` gains `"code_kind": "response" | "nack" | null` next to `"code"`. `"response"` means a `Command_Response` code (the panel rejected the command), `"nack"` the NACK code of a `Command_Error` (the panel interface refused it). The two numberings overlap with different meanings: response 1 is `CannotExitConfiguration`, NACK 1 is `InvalidCommandLength`. `code_kind` is null whenever `code` is null (success, session not found, invalid request, no answer in time).
+- A NACK now carries its NACK code in `code` (it was null) and a text in `message`.
+- `message` is a short English text from two maps, one entry per member of `CommandResponseCode` and of `ITv2NackCode`, for example "Invalid access code" (17), "Access code required" (18), "Panel busy" (19), "Invalid partition" (20), "Function not available" (23), "Panel command timed out" (response 25) and "Keypad locked out" (NACK 9). Values outside the enums read "Panel rejected the command (code N)" or "Panel refused the command (NACK N)".
+- Response code 1 reads "Partition not ready to arm" only for arm commands (any arming mode); for disarm, bypass and others it reads "Panel rejected the command (code 1)". NACK 1 is never "not ready".
+- The web UI snackbars for arm, disarm and bypass show these texts and now also report a NACK as a failure (before, a NACK showed nothing, or "bypassed").
+
+## Compatibility
+
+- Commands without `request_id` are answered exactly as before. The `error` frame still carries the TLink description, and a NACK still sends nothing.
+- A client that treats `code == 1` on an arm as "not ready" without looking at `code_kind` would also read a NACK 1 that way, because NACK codes are new in `code`. A NACK 1 (`InvalidCommandLength`) on an arm is not expected from a working panel. Clients should check `code_kind == "response"`.
+- `PanelCommandResult.Success` keeps its meaning; new members are `PanelNackCode` and `Accepted`.
+
+## Test evidence
+
+Unit tests: every enum member has a text; the listed texts; unknown values; code 1 for arm versus other commands. Through the real WebSocket handler, with the real services and a simulated panel, exact `command_result` frames for success, code 1 on all five arm commands (and the not-ready re-read event raised), code 1 on disarm and bypass, codes 17 and 99, NACKs 1, 9 and 77 (no not-ready event), session not found and no answer in time. Replies without `request_id` for codes 1, 17 and 99 and for a NACK are byte-identical to master's (checked against master's build).
+````
+
+### Checklist for the owner before submitting
+
+- [ ] The owner has given an explicit OK to open this PR.
+- [ ] Section D is merged upstream, or submitted first.
+- [ ] Check the PR text for personal data.
+
+---
+
+## H. Experimental FAP command (Fire / Auxiliary / Panic), off unless enabled
+
+- **Proposed title:** `Add an experimental, opt-in activate_fap command (ModuleControl_Activate_FAP)`
+- **Base branch:** `master`, after sections D and G (it uses D's `command_result` and bounded wait, and G's texts and
+  `code_kind`).
+- **Commits to cherry-pick, in this order:**
+  1. `Add the ModuleControl_Activate_FAP message behind a fail-closed gate`
+  2. `Add the AllowFapCommands application setting, off by default`
+  3. `Add the experimental activate_fap WebSocket command`
+  The tests need the test project commit and section F's helpers.
+- **Inferred layout, not verified.** The body `[command sequence][CompactInt partition][type]` with fire 0, auxiliary 1,
+  panic 2 and no access code comes from LawPaul/HA_DSC_Neo_ITv2 (GPL-3.0, like NeoHub), `dsc_itv2/messages.py`, class
+  `ModuleControlActivateFAP` @776b170. Its docstring says "Layout per dsc-itv2-protocol observations" and "per panel
+  manual", citing neither; that repository's README test (HS2032 + TL280) covers the integration as a whole, not FAP.
+  Its service sends the message and does not wait for an answer: `CommandResponse` is logged at debug and `Command_Error`
+  is dropped. Section C has the full source review. The code here is written independently and only cites that class.
+- **Untested on a real panel.** The owner tests it later, with the monitoring station on test. Until then, say in the
+  PR that it is experimental and off by default.
+
+### PR body
+
+````markdown
+## Summary
+
+An opt-in, experimental WebSocket command that asks the panel to raise a Fire, Auxiliary or Panic alarm on a partition, as the keypad's F / A / P keys do (`ModuleControl_Activate_FAP`, 0x0908):
+
+```json
+{"type": "activate_fap", "session_id": "<id>", "partition": 1, "fap_type": "fire", "request_id": "<id>"}
+```
+
+**It raises a real alarm, which the panel reports to the monitoring station.** So:
+
+- **Off by default:** a new application setting, `AllowFapCommands` ("Allow FAP commands", Settings page, "Panel control", with a warning). A settings file without it loads as off. Only the saved value counts; moving the switch without saving does nothing.
+- **Fail-closed gate in TLink:** `SessionMediator`, which every caller goes through (web UI, WebSocket API, Dev Console, background reads), refuses an `ActivateFap` unless a registered `IFapCommandPolicy` allows it. It also catches one wrapped in a request or a multiple-message packet. With no policy registered it never sends one. The Dev Console catalog does not list 0x0908.
+- **Strict request:** every field is required, and before any panel traffic the request is checked in this order: `request_id` (without one, the reply is the `error` "activate_fap requires request_id"), the setting ("FAP commands are disabled in the NeoHub settings"), `session_id` (a connected session), `partition` (a JSON integer of 1 or more that is a known partition of the session), and `fap_type` (exactly `fire`, `auxiliary` or `panic`; other casing, numbers or misspellings are refused). The fields are read as raw JSON, so a wrong type gets a failed `command_result`, not a JSON error, and no enum or partition default is ever used. The FAP kind is `fap_type` because `type` is the message discriminator.
+- **Sent once:** through `PanelCommandService`, with the same 8 s bound and `command_result` as arm. It is never retried, and the panel's answer is reported with G's texts and `code_kind`. Without a usable answer (no answer in time, or the session closed while waiting) the reply is "No answer from the panel: the alarm may still have been triggered". Every request and its result are logged at Warning with the client id.
+- **Capability:** `full_state.capabilities` ends with `"fap"` only while the setting is on, and NeoHub pushes a fresh `full_state` to every client when the setting changes.
+- No FAP button anywhere in the web UI.
+
+## Test evidence
+
+Unit and transport-level tests with a real `ITv2Session` on a fake transport:
+- **Encoder:** partition 1 fire is `09 08 [seq] 01 01 00`; auxiliary and panic end in `01` and `02`.
+- **Setting off:** no 0x0908 frame leaves through `activate_fap`, `PanelCommandService` or a generic `SessionCommand` (the Dev Console path), and none with no policy registered.
+- **Invalid requests:** 25 invalid requests and 4 without a usable `request_id` leave no frame.
+- **Valid request:** exactly one frame leaves, with the expected bytes.
+- **No second frame:** neither no answer, nor a takeover while waiting, nor a rejection or a NACK leads to a second frame. Code 1 gets the generic text and does not trigger the arm not-ready handling.
+- **Settings:** the setting is read from the saved settings, and an unsaved edit has no effect. The capability follows the setting, and a change pushes `full_state`.
+- **Real NeoHub process (no panel):** after the settings file was rewritten, `full_state` with `fap` was pushed within 0.3 s, and the Settings page shows the warning.
+
+## Untested
+
+Everything on a real panel: whether 0x0908 with this layout is accepted, which answer comes back (`Command_Response`, `Command_Error`, or only a `Simple_Ack`), whether `fire` gives the same 0x0841 type 03 and siren as the keypad, and whether `auxiliary` and `panic` are enabled in the installer's programming.
+````
+
+### Checklist for the owner before submitting
+
+- [ ] The owner has given an explicit OK to open this PR, after the test with the monitoring station.
+- [ ] Sections D and G are merged upstream, or submitted first.
+- [ ] Add the real-panel result (answer codes, what the station received) to "Test evidence" and remove it from "Untested".
+- [ ] Check the PR text for personal data.
+
+Section I is reserved for the second part of this stage (trouble types, keypad alarms, siren and alarm memory).
