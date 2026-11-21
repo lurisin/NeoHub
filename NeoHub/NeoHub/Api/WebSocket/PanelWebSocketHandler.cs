@@ -341,8 +341,8 @@ namespace NeoHub.Api.WebSocket
             }
 
             // A NACK from the panel interface (Command_Error) counts as success for the "error" path above,
-            // as it always did, but the command was not carried out, so a command_result reports a failure.
-            // Its code is an ITv2 NACK code, not a panel response code, so "code" stays null.
+            // as it always did, but the command was not carried out, so a command_result reports a failure,
+            // with the NACK code as "code" and "code_kind": "nack".
             var message = result switch
             {
                 { Success: true, PanelNack: null } =>
@@ -352,7 +352,9 @@ namespace NeoHub.Api.WebSocket
                     {
                         RequestId = command.RequestId,
                         Success = false,
-                        Message = $"Command refused by the panel interface (NACK: {result.PanelNack})"
+                        Code = result.PanelNackCode,
+                        CodeKind = result.PanelNackCode is null ? null : CommandResultMessage.NackCodeKind,
+                        Message = result.UserMessage ?? $"Command refused by the panel interface (NACK: {result.PanelNack})"
                     },
                 _ =>
                     new CommandResultMessage
@@ -360,6 +362,7 @@ namespace NeoHub.Api.WebSocket
                         RequestId = command.RequestId,
                         Success = false,
                         Code = result.PanelResponseCode,
+                        CodeKind = result.PanelResponseCode is null ? null : CommandResultMessage.ResponseCodeKind,
                         Message = result.DisplayMessage ?? defaultErrorMessage
                     }
             };
@@ -367,8 +370,8 @@ namespace NeoHub.Api.WebSocket
             if (message.Success)
                 _logger.LogDebug("Client {ClientId} → command_result {RequestId}: success", clientId, command.RequestId);
             else
-                _logger.LogWarning("Client {ClientId} → command_result {RequestId}: failed, code {Code}: {Message}",
-                    clientId, command.RequestId, message.Code, message.Message);
+                _logger.LogWarning("Client {ClientId} → command_result {RequestId}: failed, code {Code} ({CodeKind}): {Message}",
+                    clientId, command.RequestId, message.Code, message.CodeKind, message.Message);
 
             try
             {

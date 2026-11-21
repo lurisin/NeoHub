@@ -50,8 +50,10 @@ namespace NeoHub.Services
         public int? PanelResponseCode { get; init; }
 
         /// <summary>
-        /// Short text for people when a known rejection means more than <see cref="ErrorMessage"/>
-        /// (for example code 1 on an arm command). Null otherwise.
+        /// Short English text for people when the panel rejected or refused the command
+        /// (<see cref="DSC.TLink.ITv2.PanelRejectionText"/>: response code texts, with code 1 on an arm command as
+        /// "Partition not ready to arm", and NACK texts). Null otherwise; <see cref="ErrorMessage"/> keeps the TLink
+        /// description.
         /// </summary>
         public string? UserMessage { get; init; }
 
@@ -61,6 +63,12 @@ namespace NeoHub.Services
         /// the command was not carried out. Null otherwise.
         /// </summary>
         public string? PanelNack { get; init; }
+
+        /// <summary>Numeric ITv2 NACK code when <see cref="PanelNack"/> is set. Null otherwise.</summary>
+        public int? PanelNackCode { get; init; }
+
+        /// <summary>The panel accepted the command: <see cref="Success"/> and no NACK.</summary>
+        public bool Accepted => Success && PanelNack is null;
 
         /// <summary>True when the panel did not answer in time; the panel may still have acted on the command.</summary>
         public bool TimedOut { get; init; }

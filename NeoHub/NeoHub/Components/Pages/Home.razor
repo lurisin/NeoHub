@@ -424,7 +424,7 @@
 		try
 		{
 			var result = await CommandService.ArmAsync(sessionId, partition, mode);
-			if (!result.Success)
+			if (!result.Accepted)
 				Snackbar.Add($"Arm failed: {result.DisplayMessage}", Severity.Error);
 		}
 		finally
@@ -470,8 +470,8 @@
 		{
 			var code = string.IsNullOrEmpty(disarmCode) ? null : disarmCode;
 			var result = await CommandService.DisarmAsync(disarmSessionId, disarmPartition.Value, code);
-			if (!result.Success)
-				Snackbar.Add($"Disarm failed: {result.ErrorMessage}", Severity.Error);
+			if (!result.Accepted)
+				Snackbar.Add($"Disarm failed: {result.DisplayMessage}", Severity.Error);
 		}
 		finally
 		{

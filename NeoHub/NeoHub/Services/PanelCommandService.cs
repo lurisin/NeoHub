@@ -66,7 +66,6 @@ namespace NeoHub.Services
         }
 
         private const int NotReadyToArmResponseCode = 1;
-        private const string NotReadyToArmMessage = "Partition not ready to arm";
 
         public event EventHandler<ArmRejectedNotReadyEventArgs>? ArmRejectedNotReady;
 
@@ -112,16 +111,12 @@ namespace NeoHub.Services
                 AccessCode = code
             };
 
-            var result = await SendCommandAsync(sessionId, message);
-
             // Response code 1 to an arm command means the partition is not ready to arm. One cause is an
             // open zone (seen on a PowerSeries Neo: rejected with code 1 while a door was open, accepted
             // once it was closed); others, such as a trouble that blocks arming, may give the same code,
-            // so the text does not name a cause. ErrorMessage keeps the generic description of code 1.
-            if (result.PanelResponseCode == NotReadyToArmResponseCode)
-                result = result with { UserMessage = NotReadyToArmMessage };
-
-            return result;
+            // so the text does not name a cause (PanelRejectionText.ForResponseCode). ErrorMessage keeps the
+            // generic description of code 1.
+            return await SendCommandAsync(sessionId, message);
         }
 
         public async Task<PanelCommandResult> DisarmAsync(string sessionId, byte partition, string? accessCode = null)
@@ -230,7 +225,12 @@ namespace NeoHub.Services
                 if (response.Success)
                     return response.PanelNack is null
                         ? PanelCommandResult.Ok()
-                        : PanelCommandResult.Ok() with { PanelNack = response.PanelNack };
+                        : PanelCommandResult.Ok() with
+                        {
+                            PanelNack = response.PanelNack,
+                            PanelNackCode = response.PanelNackCode,
+                            UserMessage = response.PanelNackCode is int nack ? PanelRejectionText.ForNackCode(nack) : null
+                        };
 
                 // SessionMediator turns the cancellation into a failed response, so check our own token.
                 if (timeout.IsCancellationRequested && !response.PanelResponseCode.HasValue)
@@ -238,8 +238,11 @@ namespace NeoHub.Services
 
                 _logger.LogWarning("Command failed: [{Code}] {Error}", response.ErrorCode, response.ErrorMessage);
 
-                if (response.PanelResponseCode.HasValue)
-                    return PanelCommandResult.Rejected(response.PanelResponseCode.Value, response.ErrorMessage ?? "Unknown error");
+                if (response.PanelResponseCode is int code)
+                    return PanelCommandResult.Rejected(code, response.ErrorMessage ?? "Unknown error") with
+                    {
+                        UserMessage = PanelRejectionText.ForResponseCode(code, armCommand: message is PartitionArm)
+                    };
 
                 return response.ErrorCode.HasValue
                     ? PanelCommandResult.Error(response.ErrorCode.Value, response.ErrorMessage ?? response.ErrorCode.Value.ToString())

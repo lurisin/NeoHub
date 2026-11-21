@@ -104,15 +104,22 @@ namespace NeoHub.Api.WebSocket.Models
 
     /// <summary>
     /// Outcome of a command that carried a request_id, sent only to the client that sent it.
-    /// <see cref="Code"/> is the panel's numeric response code when the panel rejected the command,
-    /// otherwise null (including when the panel interface refused it with a NACK).
-    /// On success, <see cref="Code"/> and <see cref="Message"/> are null.
+    /// <see cref="Code"/> is the panel's numeric code when the panel did not carry the command out, and
+    /// <see cref="CodeKind"/> says which numbering it belongs to: "response" for a <c>Command_Response</c> code
+    /// (a panel-level rejection) or "nack" for the NACK code of a <c>Command_Error</c> (the panel interface refused
+    /// it). The two numberings overlap with different meanings. Both are null whenever there is no panel code
+    /// (success, session not found, validation errors, no answer in time, ...).
+    /// On success, <see cref="Code"/>, <see cref="CodeKind"/> and <see cref="Message"/> are null.
     /// </summary>
     public record CommandResultMessage : WebSocketMessage
     {
+        public const string ResponseCodeKind = "response";
+        public const string NackCodeKind = "nack";
+
         public required string RequestId { get; init; }
         public required bool Success { get; init; }
         public int? Code { get; init; }
+        public string? CodeKind { get; init; }
         public string? Message { get; init; }
     }
 

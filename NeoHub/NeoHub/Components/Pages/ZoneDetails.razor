@@ -233,7 +233,7 @@
             var result = await PanelCommand.BypassZoneAsync(
                 SessionId, (byte)PartitionNumber, zone.ZoneNumber, bypassing);
 
-            if (result.Success)
+            if (result.Accepted)
             {
                 Snackbar.Add(
                     $"Zone {zone.ZoneNumber} {(bypassing ? "bypassed" : "unbypassed")}",
@@ -241,7 +241,7 @@
             }
             else
             {
-                Snackbar.Add($"Bypass failed: {result.ErrorMessage}", Severity.Error);
+                Snackbar.Add($"Bypass failed: {result.DisplayMessage}", Severity.Error);
             }
         }
         finally
@@ -276,12 +276,12 @@
                     var result = await PanelCommand.BypassZoneAsync(
                         SessionId, (byte)PartitionNumber, zone.ZoneNumber, bypass: true);
 
-                    if (result.Success)
+                    if (result.Accepted)
                         succeeded++;
                     else
                     {
                         failed++;
-                        Snackbar.Add($"Zone {zone.ZoneNumber}: {result.ErrorMessage}", Severity.Warning);
+                        Snackbar.Add($"Zone {zone.ZoneNumber}: {result.DisplayMessage}", Severity.Warning);
                     }
                 }
                 finally
