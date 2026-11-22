@@ -226,6 +226,34 @@ Once the panel has been configured, return to the NeoHub web UI. If everything i
 
 A command sent with a `request_id` gets one `command_result` back. When the panel did not carry the command out, `code` is the panel's number and `code_kind` says which numbering it belongs to: `"response"` (a panel rejection, `Command_Response`) or `"nack"` (the panel interface refused it, `Command_Error`). The two numberings overlap with different meanings. Both are `null` when there is no panel code (session not found, invalid request, no answer in time). `message` is a short English text, for example "Invalid access code", "Panel busy" or "Keypad locked out"; response code 1 reads "Partition not ready to arm" only for arm commands. Commands without `request_id` are answered exactly as before.
 
+A NACK now carries its NACK code in `code` (it used to be `null`). A client that treats `code == 1` on an arm as "not ready" without looking at `code_kind` (the Home Assistant integration up to 1.3.0 does) shows a NACK 1 (`InvalidCommandLength`) as "not ready". Only the text is wrong: the command still fails, and a working panel is not expected to send that NACK. Update the integration together with NeoHub.
+
+### Troubles, keypad alarms, siren and alarm memory for WebSocket clients
+
+`full_state.capabilities` lists `trouble_types`, `keypad_alarms` and `partition_siren_memory`. Every partition in `full_state` and `partition_update` carries:
+
+- `troubles` (as before) and `trouble_types`: the active troubles, the same list on every partition whose `troubles` is true and `[]` otherwise. The labels are `ac_failure`, `tamper` (the cabinet tamper) and `battery_disconnected`, `unknown_<A>_<B>_<C>` (hex) for any other trouble the panel reports, and `unknown`, always last, when the panel reports troubles that none of its trouble messages explains (for example ones that were active before NeoHub connected). These names do not change in later versions.
+- `siren`: the partition's siren is sounding.
+- `alarm_memory`: an alarm is in the partition's memory (on DSC panels it clears at the next arming).
+
+A change of any of them alone sends a `partition_update`; nothing changes, nothing is sent.
+
+How `troubles` behaves: a new trouble turns it on at once on every partition. A restore never turns it off by itself: when no trouble is left, NeoHub reads the partition status again about 3 s later and turns it off if the panel reports no troubles; otherwise the periodic re-read does (the trouble refresh interval of the panel connection, on the Settings page; with the refresh off the flag follows the troubles the panel reports). The troubles are treated as panel-wide: when a partition that showed troubles reads none, every partition is cleared.
+
+The siren turns on and off with the panel's bell messages and is also turned off by any arm or disarm of the partition, so a missed "off" cannot hide the next alarm. The status re-reads may turn it on but never off while the panel's own "on" is current.
+
+A keypad alarm (the F / A / P keys) is sent as its own message, also for a partition the client does not know:
+
+```json
+{"type":"keypad_alarm","session_id":"<session>","partition":1,"alarm_type":"fire","code":3,"time":"2000-01-01T00:00:00.000Z"}
+```
+
+`alarm_type` is `fire` (code 3) or `unknown` (any other code; the other codes, 9 for example, are not identified). An `unknown` keypad alarm is **not** a confirmed panic or auxiliary key press: on other panels this message also carries conditions that are not key presses, so automations should not treat it as one. `code` is the panel's raw value and `time` is NeoHub's clock, in UTC. Each session in `full_state` carries the last one as `last_keypad_alarm` (`{partition, alarm_type, code, time}` or `null`), so a client that was reconnecting does not miss it; it is kept in memory while the panel stays connected and is lost when NeoHub restarts.
+
+A keypad alarm does not change the partition's `status`: it stays `disarmed` or `armed_*`, and clients see no `triggered` for keypad or other alarms. Detect alarms with `keypad_alarm` and `siren`.
+
+These message layouts are inferred from what one PowerSeries Neo panel sent; they are not documented. Anything that does not fit them is logged at Information with its bytes and ignored.
+
 ### Experimental: FAP commands (Fire / Auxiliary / Panic)
 
 > **Warning:** a FAP command raises a **real alarm**. The panel sounds it and reports it to the monitoring station.
