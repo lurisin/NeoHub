@@ -63,6 +63,15 @@ This fork is upstream `master` (61a1a0e) plus these commits, in this order:
 | `Test FAP replies that are only an ack, each gate alone, and a real close` | Draft PR (section H, with one test for section F) |
 | `Reload the settings right after saving them` | Draft PR (section H) |
 | `Update upstream PR drafts F, G and H` | Fork only, never submit |
+| `Parse trouble detail, keypad alarm, bell and alarm memory notifications` | Draft PR (section I) |
+| `Pass trouble detail notifications on from the connect burst` | Draft PR (section I) |
+| `Keep the active trouble details per session and send trouble_types` | Draft PR (section I) |
+| `Send keypad alarms to WebSocket clients as keypad_alarm` | Draft PR (section I) |
+| `Accept several trouble detail records, state 02 and only 1 to 4 byte CompactInts` | Draft PR (section I) |
+| `Track the partition siren and alarm memory and send them to clients` | Draft PR (section I) |
+| `Clear the troubles of every partition when one that showed them reads none` | Draft PR (section I) |
+| `Document trouble types, keypad alarms, siren and alarm memory` | README part of section I (and of section G's compatibility note) |
+| `Add upstream PR draft I; research notes in G and H` | Fork only, never submit |
 
 Section C is the research record for fire / auxiliary / panic activation (`ModuleControl_Activate_FAP`, 0x0908). It is now implemented, gated and experimental, as section H.
 Section D is a separate draft PR (command results, panel response codes, an 8 s bound on the panel's answer, partition ready state). It builds on section A.
@@ -70,6 +79,7 @@ Section E is a separate draft PR (partition trouble flag kept current and sent t
 Section F is a separate draft PR (an overlapping panel reconnect no longer loses the session). It fixes an upstream bug and does not depend on A, D or E apart from small hand merges.
 Section G is a separate draft PR (texts for panel response and NACK codes, `code_kind` in `command_result`). It builds on section D.
 Section H is a separate draft PR (experimental FAP command, off unless enabled in the settings). It builds on sections D and G.
+Section I is a separate draft PR (trouble types, keypad alarms, siren and alarm memory). It builds on section E (trouble flag and re-reads) and uses section F's test helpers.
 
 ---
 
@@ -688,6 +698,7 @@ xUnit tests (new test project) with the real session manager, MediatR, handlers,
 
 - Commands without `request_id` are answered exactly as before. The `error` frame still carries the TLink description, and a NACK still sends nothing.
 - A client that treats `code == 1` on an arm as "not ready" without looking at `code_kind` would also read a NACK 1 that way, because NACK codes are new in `code`. A NACK 1 (`InvalidCommandLength`) on an arm is not expected from a working panel. Clients should check `code_kind == "response"`.
+- Known mixed-version effect (fork): the Home Assistant integration up to 1.3.0 is such a client, so with this change and an older integration a NACK 1 on an arm is shown as "Partition not ready to arm". Only the text is wrong: the command still fails. Integration 1.4.0 checks `code_kind`; update the integration together with NeoHub.
 - `PanelCommandResult.Success` keeps its meaning; new members are `PanelNackCode` and `Accepted`.
 
 ## Test evidence
@@ -723,6 +734,17 @@ Unit tests: every enum member has a text; the listed texts; unknown values; code
   is dropped. Section C has the full source review. The code here is written independently and only cites that class.
 - **Untested on a real panel.** The owner tests it later, with the monitoring station on test. Until then, say in the
   PR that it is experimental and off by default.
+
+- **Research notes (not code):**
+  - The 0x0908 layout rests on a single, unsourced encoder: LawPaul's `ModuleControlActivateFAP`, never revised since it was
+    added. The "dsc-itv2-protocol" source its docstring names (rmilecki/dsc-itv2-protocol) has no FAP content.
+  - In the same 0x09xx command family some enum-like fields are CompactInts. If the owner's Fire test times out without a
+    0x0841 type 03, the unverified alternative body is `[seq] 01 01 01 00` (the type as a CompactInt). This is documented
+    only; it is not implemented.
+  - A remote panic follows the panel's audible option for the P keys, and an auxiliary alarm has no siren, so no siren
+    after `auxiliary` or `panic` is not a failure signal. Only `fire` is expected to sound like the keypad's F keys.
+  - LawPaul's reply handling is fire-and-forget: `command_sequence` is always 0, `Command_Error` is absorbed,
+    `Command_Response` is logged at debug, and the service's partition defaults to 1.
 
 ### PR body
 
@@ -768,4 +790,122 @@ Everything on a real panel: whether 0x0908 with this layout is accepted, which a
 - [ ] Add the real-panel result (answer codes, what the station received) to "Test evidence" and remove it from "Untested".
 - [ ] Check the PR text for personal data.
 
-Section I is reserved for the second part of this stage (trouble types, keypad alarms, siren and alarm memory).
+---
+
+## I. Trouble types, keypad alarms, siren and alarm memory for WebSocket clients
+
+- **Proposed title:** `Decode trouble details, keypad alarms, bell and alarm memory notifications for WebSocket clients`
+- **Base branch:** `master`, after section E (it extends E's trouble flag, connect pull and re-reads). The tests need
+  the test project commit and section F's test helpers.
+- **Commits to cherry-pick, in this order:**
+  1. `Parse trouble detail, keypad alarm, bell and alarm memory notifications`
+  2. `Pass trouble detail notifications on from the connect burst`
+  3. `Keep the active trouble details per session and send trouble_types`
+  4. `Send keypad alarms to WebSocket clients as keypad_alarm`
+  5. `Accept several trouble detail records, state 02 and only 1 to 4 byte CompactInts`
+  6. `Track the partition siren and alarm memory and send them to clients`
+  7. `Clear the troubles of every partition when one that showed them reads none`
+  8. the README part of `Document trouble types, keypad alarms, siren and alarm memory`
+  Commits 5 and 7 correct commits 1 and 3; squash them for upstream if preferred.
+- **TLink is touched:** new public message classes `TroubleDetailNotification` (0x0823, with `TroubleDetail` and
+  `TroubleDetailState`), `NonZoneAlarmStatusNotification` (0x0841, `NonZoneAlarmStatus`),
+  `PartitionAudibleBellNotification` (0x023B, `AudibleBell`) and `PartitionAlarmMemoryNotification` (0x023C,
+  `PartitionAlarmMemory`). Each keeps the payload as received and parses it with a strict `TryParse`.
+  `CompactIntegerSerializer` gains internal strict readers. `ITv2Session` passes 0x0823 on from the initial connect
+  burst (marked `ReceivedInConnectBurst`) and still discards everything else in it. These four command words are no
+  longer logged as undecoded notifications (section E).
+- **Inferred layouts, not documented anywhere.** Every meaning below is inferred from payloads captured from one
+  PowerSeries Neo panel with a TL280-family communicator (bytes only, kept in the tests), plus other open-source ITv2
+  code:
+  - 0x0823: one or more records `[CompactInt A][CompactInt B][CompactInt C][state]`. Shikaban/bentel-absoluta-local
+    (`protocol/dsc/commands/TroubleDetailNotification.java` @2eac1a5: an array of {variable bytes device/module type,
+    variable bytes trouble type, variable bytes device/module number, u8 status}) and valerix85/bentelalarm_for_ha
+    (`custom_components/bentel_absoluta/itv2/client.py` `_handle_troubles` @25911da: records in a loop, status
+    0 restore, 1 trouble, 2 memory) read it as repeated records; a third parser (npm `dsc-itv2-client`) was reported to
+    do the same by the research step and was not re-checked here. Every capture was a single seven-byte record with one-byte
+    CompactInts. The labels exist only for the three proven tuples: `(00, 09, 00)` AC failure, `(12, 81, 01)` cabinet
+    tamper, `(00, 87, 00)` backup battery disconnected.
+  - 0x0841: `[CompactInt partition][alarm type][state]`; type 03 came with the siren, the alarm memory and the keypad
+    display of a Fire alarm; other types, such as 09, are not identified. valerix85/bentelalarm_for_ha
+    reads the same command word as `[partition][type]` "blocking conditions" on Bentel Absoluta panels, so on other
+    panels it also carries conditions that are not key presses.
+  - 0x023B: LawPaul/HA_DSC_Neo_ITv2 documents `[CompactInt partition][flags]` without meanings; only the byte after
+    the partition is used (nonzero = siren on). The rest (seen as `02 02 00 F0` and `00 02 00 00`) is not interpreted.
+  - 0x023C: `[CompactInt partition][value]`, nonzero = alarm in memory, as LawPaul/HA_DSC_Neo_ITv2 reads it. Only a set
+    was captured.
+- **Written independently:** the sources above were read for their byte layouts only and are cited, not copied.
+- **Deviations from the owner's request, intended (keep them in the PR description):**
+  - 0x0823 is accepted as one or more whole records, applied in order and announced once; a payload that does not
+    parse as whole records is malformed as a whole (logged with its hex, nothing applied).
+  - The strict CompactInt readers accept 1 to 4 bytes and a value that fits an int; a zero length (as in the Bentel
+    fixture `00 FF 01` for 0x0841, so not partition 0) or a longer one is malformed.
+  - State 02 of 0x0823 ("in memory") is treated like 00 (restored) and logged as "in memory (treated as restored)";
+    any other state is malformed.
+  - The proven labels match the values of A, B and C; `unknown_<A>_<B>_<C>` uses the value bytes as received.
+  - "Session ready" for trouble details means: the connect pull has read the partition status. A set still not empty
+    at that moment turns the flags on.
+  - The extra read about 3 s after a restore is also requested when the restore finds the set already empty, and it
+    is kept (not dropped) while a command waits for the panel, as section E's re-read after a code-1 rejection is; it
+    is skipped during configuration or programming.
+  - A "no troubles" read clears the troubles of every partition only when the partition read was showing troubles. A
+    partition that already showed none does not clear the others, so partitions that disagree on TroublesPresent do
+    not flap once per round.
+  - The keypad alarm's kind is `alarm_type`, because `type` is the message discriminator, and the message carries
+    `time` (NeoHub's clock, UTC). The last one is kept with the session state: it survives a takeover by a newer
+    connection, not a panel disconnect or a NeoHub restart. 0x0841 in the connect burst is discarded like the rest of
+    the burst.
+  - Siren: any arm or disarm notification of the partition turns it off. A status read never undoes a bell, alarm
+    memory or arm/disarm notification that arrived after the read was requested (both directions); the connect pull
+    keeps a bell "on" that arrived after its own read was requested. The disagreement of a read without the siren bit
+    with a bell "on" is logged once per "on".
+  - 0x023B and 0x023C of a partition NeoHub does not know are logged and ignored; no partition is created.
+
+### PR body
+
+````markdown
+## Summary
+
+NeoHub decodes four panel notifications that it used to ignore and gives WebSocket clients what they say:
+
+- **Trouble types.** `ModuleStatus_Trouble_Detail_Notification` (0x0823) keeps a panel-wide set of active troubles per session. Every partition in `full_state` and `partition_update` gains `"trouble_types"`: the labels of that set (`ac_failure`, `tamper`, `battery_disconnected`, or `unknown_<A>_<B>_<C>` for any other trouble) in ordinal order, then `"unknown"` when a status read reports troubles that no trouble detail explains. The list is the same on every partition whose `troubles` is true and `[]` otherwise. A new trouble turns `troubles` on at once; a restore never turns it off by itself, but asks for one extra status read about 3 s later when no trouble is left.
+- **Keypad alarms.** `ModuleStatus_Miscellaneous_NonZone_Alarm_Status` (0x0841) with state 01 is broadcast as `{"type":"keypad_alarm","session_id":"..","partition":1,"alarm_type":"fire","code":3,"time":"<UTC>"}`; `alarm_type` is `fire` for 03 and `unknown` otherwise; also for a partition the client does not know. `full_state` lists the last one per session as `"last_keypad_alarm"` (or `null`). The partition status does not change.
+- **Siren and alarm memory.** `Notification_Partition_Audible_Bell` (0x023B) and `Notification_Partition_Alarm_Memory` (0x023C), together with the `AudibleBellSiren` and `AlarmsInMemory` bits of the status reads, give every partition `"siren"` and `"alarm_memory"`. An arm or disarm turns the siren off.
+- New capabilities, in this order after section E's: `trouble_types`, `keypad_alarms`, `partition_siren_memory`. A change of any new field alone sends a `partition_update`; no change sends nothing.
+- Every decoded message is logged at Information (for example "Trouble ac_failure active", "Keypad alarm fire (code 3) on partition 1 active", "Audible bell of partition 1 on"), with the bytes at Debug; one that does not fit its layout is logged at Information with its hex and ignored.
+
+## Message layouts (inferred)
+
+The layouts are inferred from captures of one PowerSeries Neo panel and from other open-source ITv2 code; none is documented. See the code comments of each message class for the details and sources.
+
+## Behaviour of the trouble flag
+
+- The connect pull and the re-reads (periodic, after a code-1 rejection, and the new extra read) record when each status request was sent. A read that reports no troubles is not used for troubles if a state 01 trouble detail arrived after its request was sent.
+- A read that reports no troubles from a partition that showed troubles clears the set, `unknown` and the flag of every partition (the troubles are panel-wide). One from a partition that already showed none clears nothing else.
+- With the periodic re-read off (interval 0), the flags follow the set after each trouble detail.
+- Trouble details in the initial connect burst only update the set; the connect pull decides the flag.
+
+## Compatibility
+
+- Additive only: existing fields, status values and `ready` are unchanged, and replies to commands without `request_id` are byte-identical. Section E's trouble flag only turns on sooner (with a trouble detail).
+- Clients that do not know `keypad_alarm` ignore it; the Home Assistant integration up to 1.3.0 logs a Warning "Unknown message type" with the frame and goes on.
+
+## Test evidence
+
+xUnit tests with the captured payload bytes:
+- parsers: every captured payload, unknown tuples, two records, a two-record payload with a 3-byte tail, trailing bytes, bad state bytes, truncation, zero-length and five-byte CompactInts, values that do not fit an int, sub-messages of a `MultipleMessagePacket`;
+- the captured trouble sequence replayed with interleaved reads, including a "no troubles" read requested before a later state 01, checking `troubles`, `trouble_types` and the frames at each step, with no transient `unknown`; the `unknown` rule; one partition and partitions that agree or disagree; interval 0; trouble details before the connect pull has read the status and in the connect burst of a real `ITv2Session`;
+- keypad alarms (fire, unknown, partition 0, malformed, in a `MultipleMessagePacket`, kept across a takeover);
+- siren on and off, the bit that may set but not clear, the arm/disarm clear in the same frame, alarm memory set and clear with the in-flight rule, unknown partitions, and exactly one frame per change;
+- the fork's reflection harness with the real refresh service and a simulated panel: the same replay with real extra reads, and the in-process soak with a real `ITv2Session` that also receives the captured bytes.
+
+## Untested
+
+On a real panel: two-byte CompactInts, several records in one 0x0823, state 02, a 0x023C clear, the meaning of the 0x023B bytes after the on/off byte, what 0x0841 type 09 is, and whether the troubles are really the same on every partition.
+````
+
+### Checklist for the owner before submitting
+
+- [ ] The owner has given an explicit OK to open this PR.
+- [ ] Section E is merged upstream, or submitted first; section F's test helpers are available, or the tests are ported.
+- [ ] Decide whether to squash commits 5 and 7 into 1 and 3.
+- [ ] Check the PR text and tests for personal data (bytes only, no dates or times of the captures).
