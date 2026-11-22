@@ -241,7 +241,7 @@ public class TroubleTypeTests
 
     [Theory]
     [InlineData("01-00-01-8A-01-00-01", "unknown_00_8a_00")]
-    [InlineData("01-00-02-00-09-01-00-01", "unknown_00_0009_00")]   // not the proven tuple: its B has two bytes
+    [InlineData("01-00-02-00-8A-01-00-01", "unknown_00_008a_00")]   // the value bytes as received
     [InlineData("01-12-01-81-01-02-01", "unknown_12_81_02")]
     public async Task Other_tuples_are_named_by_their_bytes_and_sorted_before_unknown(string payload, string label)
     {
@@ -263,17 +263,83 @@ public class TroubleTypeTests
         s.Pull(false, false);
         s.Updates();
 
-        foreach (var payload in new[] { "01-00-01-09-01-00-01-00", "01-00-01-09-01-00-02", "01-00-00-01-00-01", "01-00-01" })
+        // The last one is two records with a 3-byte tail: nothing of it is applied, not even the first record.
+        foreach (var payload in new[] { "01-00-01-09-01-00-01-00", "01-00-01-09-01-00-03", "01-00-00-01-00-01", "01-00-01",
+                     "05-00-00-00-00-00-01-09-01-00-01", AcOn + "-" + TamperOn + "-01-12-01" })
             await s.Detail(payload);
 
         Assert.Empty(s.Updates());
         Assert.Equal(("off:", "off:"), (s.StateOf(1), s.StateOf(2)));
+        Assert.Empty(s.Session.Conditions.ActiveTroubles);
         var ignored = s.Host.Logs.Entries
             .Where(e => e.Template.StartsWith("Ignoring a ModuleStatus_Trouble_Detail_Notification"))
             .Select(e => (e.Level, e.Text)).ToList();
-        Assert.Equal(4, ignored.Count);
+        Assert.Equal(6, ignored.Count);
         Assert.All(ignored, e => Assert.Equal(Microsoft.Extensions.Logging.LogLevel.Information, e.Level));
         Assert.Contains(ignored, e => e.Text.EndsWith("[01-00-01-09-01-00-01-00]"));
+    }
+
+    [Fact]
+    public async Task The_values_identify_a_tuple_whatever_their_byte_length()
+    {
+        await using var s = await StartAsync();
+        s.Pull(false, false);
+        s.Updates();
+
+        // B = 0x09 sent as two bytes: still the AC failure, and restored by the one-byte form.
+        await s.Detail("01-00-02-00-09-01-00-01");
+        Assert.Equal(new[] { "p1 on:ac_failure", "p2 on:ac_failure" }, s.Updates());
+        await s.Detail(AcOff);
+        Assert.Empty(s.Session.Conditions.ActiveTroubles);
+        Assert.Equal(1, s.Rereads);
+    }
+
+    [Fact]
+    public async Task State_02_in_memory_counts_as_restored()
+    {
+        await using var s = await StartAsync();
+        s.Pull(false, false);
+        s.Updates();
+
+        await s.Detail(TamperOn);
+        await s.Detail(AcOn);
+        s.Updates();
+        await s.Detail("01-12-01-81-01-01-02");   // tamper in memory
+        Assert.Equal(new[] { "p1 on:ac_failure", "p2 on:ac_failure" }, s.Updates());
+        Assert.Equal(0, s.Rereads);
+        await s.Detail("01-00-01-09-01-00-02");   // AC failure in memory: the set is empty, the flags stay on
+        Assert.Equal(new[] { "p1 on:", "p2 on:" }, s.Updates());
+        Assert.Equal(1, s.Rereads);
+
+        Assert.Equal(new[] { "Trouble tamper in memory (treated as restored)", "Trouble ac_failure in memory (treated as restored)" },
+            s.Host.Logs.Entries.Where(e => e.Level == Microsoft.Extensions.Logging.LogLevel.Information && e.Text.Contains("in memory"))
+                .Select(e => e.Text));
+    }
+
+    [Fact]
+    public async Task The_records_of_one_message_are_applied_in_order_and_announced_once()
+    {
+        await using var s = await StartAsync();
+        s.Pull(false, false);
+        s.Updates();
+
+        // Two records: AC failure and tamper active, one frame per partition.
+        await s.Detail(AcOn + "-" + TamperOn);
+        Assert.Equal(new[] { "p1 on:ac_failure,tamper", "p2 on:ac_failure,tamper" }, s.Updates());
+
+        // Active then restored in the same message: the tuple is gone, the flag stays on, the extra read is asked for.
+        await s.Detail(BatteryOn + "-" + BatteryOff);
+        Assert.Empty(s.Updates());
+        await s.Detail(AcOff + "-" + TamperOff);
+        Assert.Equal(new[] { "p1 on:", "p2 on:" }, s.Updates());
+        Assert.Equal(1, s.Rereads);
+
+        // A state 01 after a read was requested, as the second record: that read's "no troubles" is not used.
+        var stale = s.Request();
+        await s.Detail(AcOff + "-" + AcOn);
+        s.Updates();
+        s.Answer(stale, 1, false);
+        Assert.Equal("on:ac_failure", s.StateOf(1));
     }
 
     [Fact]

@@ -19,42 +19,63 @@ public class PanelNotificationParserTests
     // ---- 0x0823 ModuleStatus_Trouble_Detail_Notification
 
     [Theory]
-    [InlineData("01-00-01-09-01-00-01", "00_09_00", true)]
-    [InlineData("01-00-01-09-01-00-00", "00_09_00", false)]
-    [InlineData("01-12-01-81-01-01-01", "12_81_01", true)]
-    [InlineData("01-12-01-81-01-01-00", "12_81_01", false)]
-    [InlineData("01-00-01-87-01-00-01", "00_87_00", true)]
-    [InlineData("01-00-01-87-01-00-00", "00_87_00", false)]
-    [InlineData("01-00-01-8A-01-00-01", "00_8a_00", true)]      // a tuple never captured
-    [InlineData("02-00-12-01-09-01-00-00", "0012_09_00", false)] // a two-byte CompactInt keeps both bytes
-    [InlineData("01-00-02-00-09-01-00-01", "00_0009_00", true)]  // not the same tuple as 00_09_00
-    public void Trouble_detail_parses_three_compact_ints_and_the_state(string payload, string key, bool active)
+    [InlineData("01-00-01-09-01-00-01", 0x00, 0x09, 0x00, "00_09_00", TroubleDetailState.Active)]
+    [InlineData("01-00-01-09-01-00-00", 0x00, 0x09, 0x00, "00_09_00", TroubleDetailState.Restored)]
+    [InlineData("01-12-01-81-01-01-01", 0x12, 0x81, 0x01, "12_81_01", TroubleDetailState.Active)]
+    [InlineData("01-12-01-81-01-01-00", 0x12, 0x81, 0x01, "12_81_01", TroubleDetailState.Restored)]
+    [InlineData("01-00-01-87-01-00-01", 0x00, 0x87, 0x00, "00_87_00", TroubleDetailState.Active)]
+    [InlineData("01-00-01-87-01-00-00", 0x00, 0x87, 0x00, "00_87_00", TroubleDetailState.Restored)]
+    [InlineData("01-00-01-87-01-00-02", 0x00, 0x87, 0x00, "00_87_00", TroubleDetailState.InMemory)] // never captured
+    [InlineData("01-00-01-8A-01-00-01", 0x00, 0x8A, 0x00, "00_8a_00", TroubleDetailState.Active)]   // a tuple never captured
+    [InlineData("02-00-12-01-09-01-00-00", 0x12, 0x09, 0x00, "0012_09_00", TroubleDetailState.Restored)] // two-byte CompactInt
+    [InlineData("01-00-02-00-09-01-00-01", 0x00, 0x09, 0x00, "00_0009_00", TroubleDetailState.Active)]   // same values as AC failure
+    [InlineData("04-00-00-01-00-01-09-01-00-01", 0x100, 0x09, 0x00, "00000100_09_00", TroubleDetailState.Active)] // four bytes
+    public void Trouble_detail_parses_three_compact_ints_and_the_state(string payload, int a, int b, int c, string rawKey, TroubleDetailState state)
     {
         var message = Assert.IsType<TroubleDetailNotification>(Decode(0x0823, payload));
         Assert.Equal(Hex(payload), message.Payload);
         Assert.False(message.ReceivedInConnectBurst);
 
-        Assert.True(message.TryParse(out var detail));
-        Assert.Equal(key, detail.Key);
-        Assert.Equal(active, detail.Active);
+        Assert.True(message.TryParse(out var details));
+        var detail = Assert.Single(details);
+        Assert.Equal((a, b, c), detail.Tuple);
+        Assert.Equal(rawKey, detail.RawKey);
+        Assert.Equal(state, detail.State);
+        Assert.Equal(state == TroubleDetailState.Active, detail.Active);
+    }
+
+    [Fact]
+    public void Trouble_detail_with_two_records_parses_both_in_order()
+    {
+        var message = Assert.IsType<TroubleDetailNotification>(Decode(0x0823, "01-00-01-09-01-00-01-01-12-01-81-01-01-00"));
+        Assert.True(message.TryParse(out var details));
+        Assert.Collection(details,
+            d => Assert.Equal(((0x00, 0x09, 0x00), TroubleDetailState.Active), (d.Tuple, d.State)),
+            d => Assert.Equal(((0x12, 0x81, 0x01), TroubleDetailState.Restored), (d.Tuple, d.State)));
     }
 
     [Theory]
-    [InlineData("01-00-01-09-01-00-01-00")]   // trailing byte
-    [InlineData("01-00-01-09-01-00-02")]      // state neither 00 nor 01
+    [InlineData("01-00-01-09-01-00-01-00")]   // trailing byte (a partial second record)
+    [InlineData("01-00-01-09-01-00-01-01-12-01")] // two records, the second a 3-byte tail
+    [InlineData("01-00-01-09-01-00-01-01-12-01-81-01-01-03")] // two records, bad state in the second
+    [InlineData("01-00-01-09-01-00-01-00-01-81-01-01-01")]    // two records, zero-length CompactInt in the second
+    [InlineData("01-00-01-09-01-00-03")]      // state neither 00, 01 nor 02
     [InlineData("01-00-01-09-01-00-FF")]
     [InlineData("01-00-01-09-01-00")]         // no state byte
     [InlineData("01-00-01-09-01")]            // truncated in the third CompactInt
     [InlineData("01-00-01")]                  // length byte without its value
     [InlineData("01-00-00-01-00-01")]         // zero-length CompactInt
     [InlineData("00-01-09-01-00-01")]
+    [InlineData("05-00-00-00-00-00-01-09-01-00-01")] // five-byte CompactInt
+    [InlineData("04-80-00-00-00-01-09-01-00-01")]    // four bytes that do not fit an int
     [InlineData("05-00-01-09-01")]            // length longer than the payload
     [InlineData("")]
     public void Malformed_trouble_detail_is_not_parsed(string payload)
     {
         // Still decoded as its own type (never DefaultMessage), so it is not an "undecoded notification".
         var message = Assert.IsType<TroubleDetailNotification>(Decode(0x0823, payload));
-        Assert.False(message.TryParse(out _));
+        Assert.False(message.TryParse(out var details));
+        Assert.Empty(details);
     }
 
     // ---- 0x0841 ModuleStatus_Miscellaneous_NonZone_Alarm_Status
@@ -66,6 +87,7 @@ public class PanelNotificationParserTests
     [InlineData("01-01-09-00", 1, 0x09, false)]
     [InlineData("01-00-03-01", 0, 0x03, true)]       // partition 0 is passed on as such
     [InlineData("02-01-00-09-01", 256, 0x09, true)]  // two-byte partition
+    [InlineData("04-00-00-00-01-03-01", 1, 0x03, true)] // four-byte partition
     public void Keypad_alarm_parses_partition_type_and_state(string payload, int partition, byte type, bool active)
     {
         var message = Assert.IsType<NonZoneAlarmStatusNotification>(Decode(0x0841, payload));
@@ -80,7 +102,8 @@ public class PanelNotificationParserTests
     [InlineData("01-01")]
     [InlineData("00-03-01")]         // zero-length CompactInt
     [InlineData("00-FF-01")]         // the same, as another integration reads this message: not partition 0
-    [InlineData("05-FF-FF-FF-FF-FF-03-01")] // partition does not fit an int
+    [InlineData("05-00-00-00-00-01-03-01")] // five-byte CompactInt
+    [InlineData("04-FF-FF-FF-FF-03-01")]    // partition does not fit an int
     [InlineData("")]
     public void Malformed_keypad_alarm_is_not_parsed(string payload)
     {
@@ -108,6 +131,7 @@ public class PanelNotificationParserTests
     [InlineData("01-01")]     // no on/off byte
     [InlineData("01")]
     [InlineData("00-01-01")]  // zero-length CompactInt
+    [InlineData("05-00-00-00-00-01-01")] // five-byte CompactInt
     [InlineData("")]
     public void Malformed_bell_is_not_parsed(string payload)
     {
@@ -133,6 +157,7 @@ public class PanelNotificationParserTests
     [InlineData("01-01-01-00")]   // trailing byte
     [InlineData("01-01")]         // no value
     [InlineData("00-01")]         // zero-length CompactInt
+    [InlineData("05-00-00-00-00-01-01")] // five-byte CompactInt
     [InlineData("")]
     public void Malformed_alarm_memory_is_not_parsed(string payload)
     {
@@ -156,8 +181,8 @@ public class PanelNotificationParserTests
             m => Assert.Equal(new NonZoneAlarmStatus(1, 0x09, false), Parse(Assert.IsType<NonZoneAlarmStatusNotification>(m))),
             m =>
             {
-                Assert.True(Assert.IsType<TroubleDetailNotification>(m).TryParse(out var detail));
-                Assert.Equal(("00_87_00", true), (detail.Key, detail.Active));
+                Assert.True(Assert.IsType<TroubleDetailNotification>(m).TryParse(out var details));
+                Assert.Equal(("00_87_00", true), (Assert.Single(details).RawKey, details[0].Active));
             },
             m =>
             {

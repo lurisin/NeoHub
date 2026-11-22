@@ -15,8 +15,8 @@ namespace NeoHub.Services.Models
         /// </summary>
         internal long Sequence;
 
-        /// <summary>Panel-wide set of active troubles from 0x0823: tuple key → label.</summary>
-        internal Dictionary<string, string> ActiveTroubles { get; } = new(StringComparer.Ordinal);
+        /// <summary>Panel-wide set of active troubles from 0x0823: tuple of values (A, B, C) → label.</summary>
+        internal Dictionary<(int A, int B, int C), string> ActiveTroubles { get; } = new();
 
         /// <summary>Sequence value of the last 0x0823 with state 01 (active), 0 if none.</summary>
         internal long LastTroubleActiveAt;

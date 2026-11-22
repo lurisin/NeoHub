@@ -33,13 +33,14 @@ namespace NeoHub.Services
     ///
     /// Rules:
     /// <list type="bullet">
-    /// <item>One panel-wide set of active troubles per session, keyed by the 0x0823 tuple. A state 01 adds its tuple, a
-    /// state 00 removes it.</item>
+    /// <item>One panel-wide set of active troubles per session, keyed by the values of the 0x0823 tuple. A state 01 adds
+    /// its tuple, a state 00 (restored) or 02 (in memory) removes it. The records of one message are applied in order
+    /// and announced once.</item>
     /// <item>After the connect pull has read the partition status, a state 01 turns the flag on for every partition at
     /// once. Before that (and for a message from the connect burst) only the set changes; when the pull has read the
     /// status, a set that is still not empty turns the flags on.</item>
-    /// <item>A state 00 never turns a flag off. When it leaves the set empty, one extra re-read is requested
-    /// (<see cref="TroubleRereadRequested"/>).</item>
+    /// <item>A state 00 or 02 never turns a flag off. When the set is empty after it, one extra re-read is requested
+    /// (<see cref="TroubleRereadRequested"/>), also when it was empty already.</item>
     /// <item>Each partition keeps the flag its own reads give, as before trouble details existed. A read that reports
     /// no troubles clears that partition's flag, the whole set and the flags turned on by a state 01, unless a state 01
     /// arrived after the read was requested (<see cref="BeginStatusRead"/>): then the read is not used for troubles.</item>
@@ -47,8 +48,9 @@ namespace NeoHub.Services
     /// the set, reports troubles while the set is empty; it stays until that partition's read reports none.</item>
     /// <item>With the trouble refresh off (interval 0) the flags follow the set after each 0x0823: on while it is not
     /// empty, off (including what the connect pull read) when it is.</item>
-    /// <item>Labels only for proven tuples; any other tuple is unknown_&lt;A&gt;_&lt;B&gt;_&lt;C&gt;. The list is the
-    /// labels in ordinal order, then "unknown"; empty while the partition's flag is off.</item>
+    /// <item>Labels only for the exact values of proven tuples; any other tuple is unknown_&lt;A&gt;_&lt;B&gt;_&lt;C&gt;
+    /// from its value bytes as received. The list is the labels in ordinal order, then "unknown"; empty while the
+    /// partition's flag is off.</item>
     /// </list>
     /// Partitions are only updated, never created, and a partition_update is sent only for a visible change.
     /// </summary>
@@ -61,12 +63,12 @@ namespace NeoHub.Services
         public const string FireKeypadAlarm = "fire";
         public const string UnknownKeypadAlarm = "unknown";
 
-        /// <summary>Labels of the proven tuples (value bytes as received). These names are a stable API.</summary>
-        private static readonly IReadOnlyDictionary<string, string> KnownTroubleTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+        /// <summary>Labels of the proven tuples (exact values of A, B and C). These names are a stable API.</summary>
+        private static readonly IReadOnlyDictionary<(int, int, int), string> KnownTroubleTypes = new Dictionary<(int, int, int), string>
         {
-            ["00_09_00"] = "ac_failure",
-            ["12_81_01"] = "tamper",
-            ["00_87_00"] = "battery_disconnected",
+            [(0x00, 0x09, 0x00)] = "ac_failure",
+            [(0x12, 0x81, 0x01)] = "tamper",
+            [(0x00, 0x87, 0x00)] = "battery_disconnected",
         };
 
         private readonly IPanelStateService _panelState;
@@ -89,9 +91,12 @@ namespace NeoHub.Services
         /// <summary>The panel reported a keypad alarm (state 01), for any partition number.</summary>
         public event EventHandler<KeypadAlarmEventArgs>? KeypadAlarm;
 
-        /// <summary>The trouble type of a tuple: its label when proven, otherwise unknown_&lt;A&gt;_&lt;B&gt;_&lt;C&gt;.</summary>
+        /// <summary>
+        /// The trouble type of a tuple: its label when its values are those of a proven tuple, otherwise
+        /// unknown_&lt;A&gt;_&lt;B&gt;_&lt;C&gt; from the value bytes as received (<see cref="TroubleDetail.RawKey"/>).
+        /// </summary>
         public static string TroubleTypeLabel(TroubleDetail detail) =>
-            KnownTroubleTypes.TryGetValue(detail.Key, out var label) ? label : "unknown_" + detail.Key;
+            KnownTroubleTypes.TryGetValue(detail.Tuple, out var label) ? label : "unknown_" + detail.RawKey;
 
         #region Status reads
 
@@ -181,45 +186,57 @@ namespace NeoHub.Services
 
         #region Trouble details (0x0823)
 
-        /// <summary>Applies a parsed 0x0823 of a session, under the rules above, and logs it at Information.</summary>
-        public void ApplyTroubleDetail(string sessionId, TroubleDetail detail, bool inConnectBurst, ILogger log)
+        /// <summary>
+        /// Applies the records of a parsed 0x0823 of a session in order, under the rules above, and logs each at
+        /// Information. The partitions are announced once, after the last record.
+        /// </summary>
+        public void ApplyTroubleDetails(string sessionId, IReadOnlyList<TroubleDetail> details, bool inConnectBurst, ILogger log)
         {
             var session = GetOrCreateSession(sessionId);
             var c = session.Conditions;
-            var label = TroubleTypeLabel(detail);
-            var state = detail.Active ? "active" : "restored";
             bool reread = false;
 
             lock (c.Gate)
             {
                 var ready = c.ConnectPullDone && !inConnectBurst;
-                if (ready)
-                    log.LogInformation("Trouble {TroubleType} {TroubleState}", label, state);
-                else
-                    log.LogInformation(
-                        "Trouble {TroubleType} {TroubleState} (tuple {Tuple}) before the session was ready{Burst}; the connect pull decides the trouble flag",
-                        label, state, detail.Key, inConnectBurst ? ", in the connect burst" : string.Empty);
-
+                var refreshOff = IsRefreshOff(sessionId);
                 var partitions = Snapshot(session, null);
                 var before = Capture(c, partitions);
 
-                bool setChanged;
-                if (detail.Active)
+                foreach (var detail in details)
                 {
-                    setChanged = !c.ActiveTroubles.ContainsKey(detail.Key);
-                    c.ActiveTroubles[detail.Key] = label;
-                    c.LastTroubleActiveAt = ++c.Sequence;
-                }
-                else
-                {
-                    setChanged = c.ActiveTroubles.Remove(detail.Key);
-                }
-                if (setChanged)
-                    c.LastTroubleSetChangeAt = ++c.Sequence;
+                    var label = TroubleTypeLabel(detail);
+                    var state = detail.State switch
+                    {
+                        TroubleDetailState.Active => "active",
+                        TroubleDetailState.InMemory => "in memory (treated as restored)",
+                        _ => "restored",
+                    };
+                    if (ready)
+                        log.LogInformation("Trouble {TroubleType} {TroubleState}", label, state);
+                    else
+                        log.LogInformation(
+                            "Trouble {TroubleType} {TroubleState} (tuple {Tuple}) before the session was ready{Burst}; the connect pull decides the trouble flag",
+                            label, state, detail.RawKey, inConnectBurst ? ", in the connect burst" : string.Empty);
 
-                if (ready)
-                {
-                    if (IsRefreshOff(sessionId))
+                    bool setChanged;
+                    if (detail.Active)
+                    {
+                        setChanged = !c.ActiveTroubles.TryGetValue(detail.Tuple, out var stored) || stored != label;
+                        c.ActiveTroubles[detail.Tuple] = label;
+                        c.LastTroubleActiveAt = ++c.Sequence;
+                    }
+                    else
+                    {
+                        // Restored, or in memory: no longer active.
+                        setChanged = c.ActiveTroubles.Remove(detail.Tuple);
+                    }
+                    if (setChanged)
+                        c.LastTroubleSetChangeAt = ++c.Sequence;
+
+                    if (!ready)
+                        continue;
+                    if (refreshOff)
                     {
                         // No re-reads: the flags follow the set.
                         c.TroublesForced = c.ActiveTroubles.Count > 0;
@@ -236,12 +253,11 @@ namespace NeoHub.Services
                     {
                         c.TroublesForced = true;
                     }
-                    else if (c.ActiveTroubles.Count == 0)
-                    {
-                        // Never cleared here: the re-read tells whether anything else is still active.
-                        reread = true;
-                    }
                 }
+
+                // Never cleared by a restore: the extra read tells whether anything else is still active.
+                if (ready && !refreshOff && c.ActiveTroubles.Count == 0 && details.Any(d => !d.Active))
+                    reread = true;
 
                 Publish(sessionId, session, partitions, before, null, log);
             }
