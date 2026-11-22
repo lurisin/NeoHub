@@ -48,9 +48,10 @@ namespace NeoHub.Services
     /// <item>A read that reports troubles turns that partition's flag on, as before trouble details existed. The
     /// troubles are panel-wide, so a read of any partition that showed troubles and now reports none clears the set,
     /// "unknown" and the flag of every partition, unless a state 01 arrived after the read was requested
-    /// (<see cref="BeginStatusRead"/>): then the read is not used for troubles. A "none" from a partition that already
-    /// showed none clears only the set (empty by then, except during the connect pull), so partitions that disagree on
-    /// TroublesPresent keep what their own reads give instead of flapping.</item>
+    /// (<see cref="BeginStatusRead"/>): then the read is not used for troubles; a state 01 from the connect burst
+    /// does not count for that (it predates the connection). A "none" that empties a set that was not empty does the
+    /// same. A "none" from a partition that already showed none, with the set already empty, changes nothing else, so
+    /// partitions that disagree on TroublesPresent keep what their own reads give instead of flapping.</item>
     /// <item>"unknown" is added to the trouble types (panel-wide) when a read requested after the last change of the
     /// set reports troubles while the set is empty; it stays, next to later labels, until a read reports none.</item>
     /// <item>With the trouble refresh off (interval 0) the flags follow the set after each 0x0823: on while it is not
@@ -163,9 +164,11 @@ namespace NeoHub.Services
                 else
                 {
                     // The troubles are panel-wide: a partition that showed troubles and now reads none clears them on
-                    // every partition. One that already showed none only confirms that and leaves the others alone,
-                    // so partitions that disagree on TroublesPresent do not flap round after round.
-                    var showedTroubles = own.ReadTroubles || c.TroublesForced;
+                    // every partition, and so does a "none" that ends troubles the panel had reported in detail (the
+                    // set is not empty: during the connect pull). One that already showed none, with nothing in the
+                    // set, only confirms that and leaves the others alone, so partitions that disagree on
+                    // TroublesPresent do not flap round after round.
+                    var showedTroubles = own.ReadTroubles || c.TroublesForced || c.ActiveTroubles.Count > 0;
                     ClearTroubleSet(c);
                     c.TroublesForced = false;
                     if (showedTroubles)
@@ -303,7 +306,10 @@ namespace NeoHub.Services
                     {
                         setChanged = !c.ActiveTroubles.TryGetValue(detail.Tuple, out var stored) || stored != label;
                         c.ActiveTroubles[detail.Tuple] = label;
-                        c.LastTroubleActiveAt = ++c.Sequence;
+                        // A record from the connect burst predates the connection: it never keeps a status read
+                        // from counting (the connect pull decides).
+                        if (!inConnectBurst)
+                            c.LastTroubleActiveAt = ++c.Sequence;
                     }
                     else
                     {
