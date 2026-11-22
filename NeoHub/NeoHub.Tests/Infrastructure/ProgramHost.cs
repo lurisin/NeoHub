@@ -25,7 +25,8 @@ internal sealed class ProgramHost : IDisposable, IObserver<DiagnosticListener>, 
 
     /// <param name="userSettingsJson">Content of userSettings.json, or null for no file.</param>
     /// <param name="environment">Extra environment variables while the host is built.</param>
-    public static ProgramHost Build(string? userSettingsJson, IDictionary<string, string?>? environment = null)
+    /// <param name="args">Command-line arguments for Main.</param>
+    public static ProgramHost Build(string? userSettingsJson, IDictionary<string, string?>? environment = null, string[]? args = null)
     {
         var dir = Directory.CreateTempSubdirectory("neohub-program-test-").FullName;
         if (userSettingsJson is not null)
@@ -45,7 +46,7 @@ internal sealed class ProgramHost : IDisposable, IObserver<DiagnosticListener>, 
             {
                 try
                 {
-                    NeoHub.Program.Main(Array.Empty<string>());
+                    NeoHub.Program.Main(args ?? Array.Empty<string>());
                 }
                 catch (Stop)
                 {

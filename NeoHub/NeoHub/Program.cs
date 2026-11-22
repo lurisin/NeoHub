@@ -79,8 +79,9 @@ namespace NeoHub
             builder.Services.AddHostedService<PartitionTroubleRefreshService>();
 
             // FAP commands (experimental, off unless enabled in the settings): one source for the TLink gate,
-            // the command service and the WebSocket capability.
-            builder.Services.AddSingleton<FapCommandSettings>();
+            // the command service and the WebSocket capability. Only the saved settings file can turn them on.
+            var settingsFilePath = SettingsPersistenceService.GetSettingsFilePath(builder.Environment.ContentRootPath);
+            builder.Services.AddSingleton(sp => FapCommandSettings.ForSettingsFile(sp, settingsFilePath));
             builder.Services.AddSingleton<IFapCommandSettings>(sp => sp.GetRequiredService<FapCommandSettings>());
             builder.Services.AddSingleton<IFapCommandPolicy>(sp => sp.GetRequiredService<FapCommandSettings>());
 
