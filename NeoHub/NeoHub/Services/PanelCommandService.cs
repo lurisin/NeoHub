@@ -219,6 +219,12 @@ namespace NeoHub.Services
         /// </summary>
         public const string FapNoAnswerMessage = "No answer from the panel: the alarm may still have been triggered";
 
+        /// <summary>
+        /// The reply when a FAP command failed before it was written to the panel (the session was not ready in time,
+        /// or ended first): it was not sent, and it cannot be sent later.
+        /// </summary>
+        public const string FapNotSentMessage = "The FAP command was not sent: the panel session was not ready, or ended, before it could be sent";
+
         public async Task<PanelCommandResult> ActivateFapAsync(string sessionId, byte partition, FapType type)
         {
             using var inProgress = TrackCommand(sessionId);
@@ -240,12 +246,19 @@ namespace NeoHub.Services
                 "FAP command (experimental, raises a real alarm): Partition={Partition}, Type={Type}; sent once, never retried",
                 partition, type);
 
-            var result = await SendCommandAsync(sessionId, new ActivateFap { Partition = partition, Type = type }, FapNoAnswerMessage);
+            // The command may wait for the session (for example right after a takeover) before it is written. Once
+            // this method gives up, it must never be written: the claim is taken right before the write, and
+            // withdrawn here when the send failed before that, so the reply can say for sure that it was not sent.
+            var claim = new SendClaim();
+            var result = await SendCommandAsync(sessionId, new ActivateFap { Partition = partition, Type = type }, FapNoAnswerMessage,
+                claim.TryClaimForSend);
 
             // A failure that is not a panel rejection, a NACK or a refusal before sending leaves it open whether the
-            // panel raised the alarm.
+            // panel raised the alarm, unless the command was never written.
             if (!result.Success && result.PanelResponseCode is null && !result.NotSent)
-                result = result with { UserMessage = FapNoAnswerMessage };
+                result = claim.TryWithdraw()
+                    ? result with { NotSent = true, TimedOut = false, UserMessage = FapNotSentMessage }
+                    : result with { UserMessage = FapNoAnswerMessage };
 
             _logger.LogWarning("FAP command result: {Outcome}", result.Accepted ? "accepted by the panel" : result.DisplayMessage);
             return result;
@@ -260,7 +273,8 @@ namespace NeoHub.Services
         private static readonly string PanelAnswerTimeoutMessage =
             $"No confirmation from the panel within {PanelAnswerTimeout.TotalSeconds:0} s; check the partition state";
 
-        private async Task<PanelCommandResult> SendCommandAsync(string sessionId, IMessageData message, string? noAnswerMessage = null)
+        private async Task<PanelCommandResult> SendCommandAsync(string sessionId, IMessageData message, string? noAnswerMessage = null,
+            Func<bool>? mayStillSend = null)
         {
             using var timeout = new CancellationTokenSource(PanelAnswerTimeout);
             try
@@ -269,7 +283,8 @@ namespace NeoHub.Services
                 SessionResponse response = await _mediator.Send(new SessionCommand
                 {
                     SessionID = sessionId,
-                    MessageData = message
+                    MessageData = message,
+                    MayStillSend = mayStillSend
                 }, timeout.Token).WaitAsync(timeout.Token);
 
                 if (response.Success)
@@ -308,6 +323,22 @@ namespace NeoHub.Services
                 _logger.LogError(ex, "Error sending command");
                 return PanelCommandResult.Error(ex.Message);
             }
+        }
+
+        /// <summary>
+        /// Decides once whether a command is written: <see cref="TryClaimForSend"/> right before the write, or
+        /// <see cref="TryWithdraw"/> by the caller that gave up; whichever comes first wins.
+        /// </summary>
+        private sealed class SendClaim
+        {
+            private const int Open = 0, Claimed = 1, Withdrawn = 2;
+            private int _state;
+
+            public bool TryClaimForSend() => Interlocked.CompareExchange(ref _state, Claimed, Open) == Open;
+
+            /// <summary>True when the command was not written and now never will be.</summary>
+            public bool TryWithdraw() =>
+                Interlocked.CompareExchange(ref _state, Withdrawn, Open) is Open or Withdrawn;
         }
 
         private PanelCommandResult PanelAnswerTimedOut(IMessageData message, string? noAnswerMessage)

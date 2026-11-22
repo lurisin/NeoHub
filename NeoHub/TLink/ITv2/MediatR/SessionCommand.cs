@@ -17,5 +17,13 @@ namespace DSC.TLink.ITv2.MediatR
         /// instead of Warning or Error. For background reads that handle and rate-limit their own failure logs.
         /// </summary>
         public bool LogFailuresAtDebug { get; init; }
+
+        /// <summary>
+        /// Optional: called right before the message is written to the panel (once the session is ready, with the
+        /// send lock held). When it returns false the message is not sent and the response has
+        /// <see cref="SessionResponse.NotSent"/> set. A caller that stops waiting can make it return false, so that
+        /// the message cannot be written later; it is called at most once.
+        /// </summary>
+        public Func<bool>? MayStillSend { get; init; }
     }
 }

@@ -233,6 +233,14 @@ internal sealed class ITv2Session : IITv2Session
         return await SendMessageAsync(message, linkedCts.Token);
     }
 
+    public async Task<Result<IMessageData>> SendGuardedAsync(IMessageData message, Func<bool> mayStillSend, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(mayStillSend);
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, _shutdownCts.Token);
+        await _sessionReady.Task.WaitAsync(linkedCts.Token);
+        return await SendMessageAsync(message, linkedCts.Token, mayStillSend);
+    }
+
     public async IAsyncEnumerable<IMessageData> GetNotificationsAsync(
         [EnumeratorCancellation] CancellationToken ct = default)
     {
@@ -479,7 +487,7 @@ internal sealed class ITv2Session : IITv2Session
     /// The send lock protects only the send operation, not the response await.
     /// This allows the receive pump to process other messages while we wait.
     /// </summary>
-    private async Task<Result<IMessageData>> SendMessageAsync(IMessageData message, CancellationToken ct)
+    private async Task<Result<IMessageData>> SendMessageAsync(IMessageData message, CancellationToken ct, Func<bool>? mayStillSend = null)
     {
         IMessageReceiver receiver;
 
@@ -488,6 +496,13 @@ internal sealed class ITv2Session : IITv2Session
         await _sendLock.WaitAsync(ct);
         try
         {
+            // Last check before anything is written (and before a sequence number is used).
+            if (mayStillSend is not null && !mayStillSend())
+            {
+                _logger.LogDebug("TX of {MessageType} refused by its send condition; nothing sent", message.GetType().Name);
+                return Result<IMessageData>.Fail(TLinkErrorCode.Cancelled, IITv2Session.SendRefusedMessage);
+            }
+
             var senderSeq = GetNextLocalSequence();
 
             if (message is CommandRequestMessage cmdReq)

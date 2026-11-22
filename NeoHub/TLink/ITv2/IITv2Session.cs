@@ -32,6 +32,21 @@ internal interface IITv2Session : IAsyncDisposable
     Task<Result<IMessageData>> SendAsync(IMessageData message, CancellationToken ct = default);
 
     /// <summary>
+    /// Like <see cref="SendAsync"/>, but <paramref name="mayStillSend"/> is called right before the message is
+    /// written (once the session is ready, with the send lock held). When it returns false nothing is sent and the
+    /// result is a failure (<see cref="SendRefusedMessage"/>). Used for FAP commands, so that a policy change or a
+    /// caller that gave up while the send waited is honoured. The default implementation, for test doubles, calls
+    /// it once before <see cref="SendAsync"/>.
+    /// </summary>
+    Task<Result<IMessageData>> SendGuardedAsync(IMessageData message, Func<bool> mayStillSend, CancellationToken ct = default) =>
+        mayStillSend()
+            ? SendAsync(message, ct)
+            : Task.FromResult(Result<IMessageData>.Fail(TLinkErrorCode.Cancelled, SendRefusedMessage));
+
+    /// <summary>The failure text of a <see cref="SendGuardedAsync"/> whose condition refused the send.</summary>
+    const string SendRefusedMessage = "Not sent: the send condition refused it";
+
+    /// <summary>
     /// Yields inbound notifications after the session is connected.
     /// Command responses are routed internally and never appear here.
     /// MultipleMessagePackets are expanded — individual sub-messages are yielded.

@@ -20,6 +20,9 @@ namespace DSC.TLink.ITv2.MediatR
         /// <summary>The text of a refused <see cref="ActivateFap"/>.</summary>
         public const string FapDisabledMessage = ActivateFap.DisabledMessage;
 
+        /// <summary>The text of a command whose <see cref="SessionCommand.MayStillSend"/> refused it before it was written.</summary>
+        public const string WithdrawnMessage = "Not sent: the command was withdrawn before it could be sent";
+
         public SessionMediator(
             IMediator mediator,
             IITv2SessionManager sessionManager,
@@ -50,7 +53,10 @@ namespace DSC.TLink.ITv2.MediatR
 
             // Every command to a panel goes through here (web UI, WebSocket API, Dev Console, background reads),
             // so this is where a FAP command is stopped unless a policy allows it. Fails closed: no policy, no FAP.
-            if (CarriesFap(request.MessageData) && !_fapPolicies.Any(p => p.AllowFapCommands))
+            // The policy is checked again right before the message is written, so a FAP command that waited for
+            // the session (for example after a takeover) is not sent once the setting has been turned off.
+            var carriesFap = CarriesFap(request.MessageData);
+            if (carriesFap && !FapAllowed())
             {
                 _logger.LogWarning("Refused to send ModuleControl_Activate_FAP: {Reason}", FapDisabledMessage);
                 return new SessionResponse
@@ -74,9 +80,33 @@ namespace DSC.TLink.ITv2.MediatR
                 };
             }
 
+            string? refusedBeforeWrite = null;
+            Func<bool>? mayStillSend = !carriesFap && request.MayStillSend is null ? null : () =>
+            {
+                if (carriesFap && !FapAllowed())
+                    refusedBeforeWrite = FapDisabledMessage;
+                else if (request.MayStillSend is { } condition && !condition())
+                    refusedBeforeWrite = WithdrawnMessage;
+                return refusedBeforeWrite is null;
+            };
+
             try
             {
-                var result = await session.SendAsync(request.MessageData, cancellationToken);
+                var result = mayStillSend is null
+                    ? await session.SendAsync(request.MessageData, cancellationToken)
+                    : await session.SendGuardedAsync(request.MessageData, mayStillSend, cancellationToken);
+
+                if (result.IsFailure && refusedBeforeWrite is not null)
+                {
+                    _logger.LogWarning("Refused to send {Message} right before it was written: {Reason}",
+                        request.MessageData.GetType().Name, refusedBeforeWrite);
+                    return new SessionResponse
+                    {
+                        Success = false,
+                        ErrorMessage = refusedBeforeWrite,
+                        NotSent = true
+                    };
+                }
 
                 if (result.IsFailure)
                 {
@@ -147,6 +177,8 @@ namespace DSC.TLink.ITv2.MediatR
                 };
             }
         }
+
+        private bool FapAllowed() => _fapPolicies.Any(p => p.AllowFapCommands);
 
         /// <summary>
         /// True when sending the message would put ModuleControl_Activate_FAP on the wire: an <see cref="ActivateFap"/>
