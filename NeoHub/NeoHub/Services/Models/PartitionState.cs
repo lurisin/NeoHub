@@ -22,8 +22,8 @@ namespace NeoHub.Services.Models
         /// <summary>
         /// The active trouble types while <see cref="TroublesPresent"/> is set, empty otherwise: the labels of the
         /// panel-wide set of active troubles (ModuleStatus_Trouble_Detail_Notification) in ordinal order, then
-        /// "unknown" when this partition's own status read reported troubles the set does not explain. Set by
-        /// <see cref="NeoHub.Services.PartitionConditionsService"/>; replaced, never changed in place.
+        /// "unknown" when a status read reported troubles the set does not explain; the same list for every partition.
+        /// Set by <see cref="NeoHub.Services.PartitionConditionsService"/>; replaced, never changed in place.
         /// </summary>
         public IReadOnlyList<string> TroubleTypes { get; set; } = Array.Empty<string>();
 

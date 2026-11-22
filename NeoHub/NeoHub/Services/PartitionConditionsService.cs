@@ -45,16 +45,19 @@ namespace NeoHub.Services
     /// status, a set that is still not empty turns the flags on.</item>
     /// <item>A state 00 or 02 never turns a flag off. When the set is empty after it, one extra re-read is requested
     /// (<see cref="TroubleRereadRequested"/>), also when it was empty already.</item>
-    /// <item>Each partition keeps the flag its own reads give, as before trouble details existed. A read that reports
-    /// no troubles clears that partition's flag, the whole set and the flags turned on by a state 01, unless a state 01
-    /// arrived after the read was requested (<see cref="BeginStatusRead"/>): then the read is not used for troubles.</item>
-    /// <item>"unknown" is added to a partition's trouble types when its own read, requested after the last change of
-    /// the set, reports troubles while the set is empty; it stays until that partition's read reports none.</item>
+    /// <item>A read that reports troubles turns that partition's flag on, as before trouble details existed. The
+    /// troubles are panel-wide, so a read of any partition that showed troubles and now reports none clears the set,
+    /// "unknown" and the flag of every partition, unless a state 01 arrived after the read was requested
+    /// (<see cref="BeginStatusRead"/>): then the read is not used for troubles. A "none" from a partition that already
+    /// showed none clears only the set (empty by then, except during the connect pull), so partitions that disagree on
+    /// TroublesPresent keep what their own reads give instead of flapping.</item>
+    /// <item>"unknown" is added to the trouble types (panel-wide) when a read requested after the last change of the
+    /// set reports troubles while the set is empty; it stays, next to later labels, until a read reports none.</item>
     /// <item>With the trouble refresh off (interval 0) the flags follow the set after each 0x0823: on while it is not
     /// empty, off (including what the connect pull read) when it is.</item>
     /// <item>Labels only for the exact values of proven tuples; any other tuple is unknown_&lt;A&gt;_&lt;B&gt;_&lt;C&gt;
-    /// from its value bytes as received. The list is the labels in ordinal order, then "unknown"; empty while the
-    /// partition's flag is off.</item>
+    /// from its value bytes as received. The list is the labels in ordinal order, then "unknown", the same for every
+    /// partition; empty while the partition's flag is off.</item>
     /// </list>
     /// Siren and alarm memory rules (per partition), where a status read never undoes a notification that arrived after
     /// the read was requested:
@@ -149,7 +152,7 @@ namespace NeoHub.Services
                 {
                     own.ReadTroubles = true;
                     if (c.ActiveTroubles.Count == 0 && requestedAt > c.LastTroubleSetChangeAt)
-                        own.Unknown = true;
+                        c.Unknown = true;
                 }
                 else if (c.LastTroubleActiveAt > requestedAt)
                 {
@@ -159,10 +162,18 @@ namespace NeoHub.Services
                 }
                 else
                 {
+                    // The troubles are panel-wide: a partition that showed troubles and now reads none clears them on
+                    // every partition. One that already showed none only confirms that and leaves the others alone,
+                    // so partitions that disagree on TroublesPresent do not flap round after round.
+                    var showedTroubles = own.ReadTroubles || c.TroublesForced;
                     ClearTroubleSet(c);
                     c.TroublesForced = false;
-                    own.ReadTroubles = false;
-                    own.Unknown = false;
+                    if (showedTroubles)
+                    {
+                        c.Unknown = false;
+                        foreach (var p in c.Partitions.Values)
+                            p.ReadTroubles = false;
+                    }
                 }
 
                 ApplySirenBit(own, partition.PartitionNumber,
@@ -310,11 +321,9 @@ namespace NeoHub.Services
                         c.TroublesForced = c.ActiveTroubles.Count > 0;
                         if (c.ActiveTroubles.Count == 0)
                         {
+                            c.Unknown = false;
                             foreach (var p in c.Partitions.Values)
-                            {
                                 p.ReadTroubles = false;
-                                p.Unknown = false;
-                            }
                         }
                     }
                     else if (detail.Active)
@@ -554,7 +563,7 @@ namespace NeoHub.Services
                 var entry = c.Partitions[p.PartitionNumber];
                 var flag = entry.ReadTroubles || c.TroublesForced;
                 var types = !flag ? Array.Empty<string>()
-                    : entry.Unknown ? labels.Append(UnknownTroubleType).ToArray()
+                    : c.Unknown ? labels.Append(UnknownTroubleType).ToArray()
                     : labels;
 
                 var old = before[p];

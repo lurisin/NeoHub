@@ -31,6 +31,13 @@ namespace NeoHub.Services.Models
         internal bool TroublesForced;
 
         /// <summary>
+        /// "unknown" in the trouble types (panel-wide): a status read requested after the last change of
+        /// <see cref="ActiveTroubles"/> reported troubles while the set was empty. Cleared by a status read that reports
+        /// no troubles and is not older than the last state 01.
+        /// </summary>
+        internal bool Unknown;
+
+        /// <summary>
         /// The connect pull of the current connection has read the partition status. Until then, 0x0823 updates the set
         /// of active troubles but does not change the trouble flags.
         /// </summary>
@@ -44,16 +51,10 @@ namespace NeoHub.Services.Models
     internal sealed class PartitionConditions
     {
         /// <summary>
-        /// The trouble flag from this partition's own status reads, as before trouble details existed: the last read
-        /// that counted reported troubles.
+        /// The trouble flag from this partition's own status reads, as before trouble details existed: its last read
+        /// reported troubles, and since then no counted read of a partition that showed troubles reported none.
         /// </summary>
         public bool ReadTroubles;
-
-        /// <summary>
-        /// "unknown" in this partition's trouble types: its own read reported troubles that the set of active troubles
-        /// does not explain. Only set together with <see cref="ReadTroubles"/>.
-        /// </summary>
-        public bool Unknown;
 
         /// <summary>The siren is on because the panel said so (Notification_Partition_Audible_Bell on).</summary>
         public bool SirenFromBell;

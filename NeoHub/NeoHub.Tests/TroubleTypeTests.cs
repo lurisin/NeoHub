@@ -39,11 +39,11 @@ public class TroubleTypeTests
         Assert.Empty(Step());
         Assert.Equal(2, s.Rereads);  // the set is still empty: the extra read is asked for again
 
-        // The extra read: no troubles.
+        // The extra read: no troubles. The first partition's answer clears every partition (panel-wide).
         s.Read(1, false);
-        Assert.Equal(new[] { "p1 off:" }, Step());
+        Assert.Equal(new[] { "p1 off:", "p2 off:" }, Step());
         s.Read(2, false);
-        Assert.Equal(new[] { "p2 off:" }, Step());
+        Assert.Empty(Step());
 
         await s.Detail(AcOn);        // t = 72 s
         Assert.Equal(new[] { "p1 on:ac_failure", "p2 on:ac_failure" }, Step());
@@ -96,41 +96,107 @@ public class TroubleTypeTests
     public async Task Unknown_comes_from_a_read_after_the_last_set_change_and_stays_until_a_read_says_no_troubles()
     {
         await using var s = await StartAsync();
-        s.Pull(true, false);
-        Assert.Equal("on:unknown", s.StateOf(1));
-        Assert.Equal("off:", s.StateOf(2));
+        s.Pull(true, true);
+        Assert.Equal(("on:unknown", "on:unknown"), (s.StateOf(1), s.StateOf(2)));
         s.Updates();
 
         await s.Detail(TamperOn);
-        Assert.Equal(new[] { "p1 on:tamper,unknown", "p2 on:tamper" }, s.Updates());
+        Assert.Equal(new[] { "p1 on:tamper,unknown", "p2 on:tamper,unknown" }, s.Updates());
         await s.Detail(TamperOff);
-        Assert.Equal(new[] { "p1 on:unknown", "p2 on:" }, s.Updates());
+        Assert.Equal(new[] { "p1 on:unknown", "p2 on:unknown" }, s.Updates());
+        s.Read(1, false);
+        Assert.Equal(new[] { "p1 off:", "p2 off:" }, s.Updates());
 
-        // A read requested before the last set change does not add "unknown"; one requested after it does.
+        // A read requested before the last set change does not add "unknown"; one requested after it does, for every
+        // partition whose flag is on.
         await s.Detail(AcOn);
         var before = s.Request();
         await s.Detail(AcOff);
-        s.Updates();
+        Assert.Equal(new[] { "p1 on:ac_failure", "p2 on:ac_failure", "p1 on:", "p2 on:" }, s.Updates());
         s.Answer(before, 2, true);
+        Assert.Empty(s.Updates());
         Assert.Equal("on:", s.StateOf(2));
         s.Read(2, true);
-        Assert.Equal("on:unknown", s.StateOf(2));
-        Assert.Equal(new[] { "p2 on:unknown" }, s.Updates());
+        Assert.Equal(new[] { "p1 on:unknown", "p2 on:unknown" }, s.Updates());
 
-        // Partition 1 says no troubles: its flag and "unknown" go, and so does the set; partition 2 keeps what its own
-        // read gave until that read says otherwise.
+        // It stays next to later labels until a read of any partition says no troubles.
         await s.Detail(BatteryOn);
-        s.Updates();
-        s.Read(1, false);
-        Assert.Equal(new[] { "p1 off:", "p2 on:unknown" }, s.Updates());
+        Assert.Equal(new[] { "p1 on:battery_disconnected,unknown", "p2 on:battery_disconnected,unknown" }, s.Updates());
+        s.Read(1, true);
+        Assert.Empty(s.Updates());
         s.Read(2, false);
-        Assert.Equal(new[] { "p2 off:" }, s.Updates());
+        Assert.Equal(new[] { "p1 off:", "p2 off:" }, s.Updates());
+        Assert.Empty(s.Session.Conditions.ActiveTroubles);
+    }
+
+    [Fact]
+    public async Task A_single_partition_follows_the_panel_wide_rule_exactly()
+    {
+        await using var s = await StartAsync(partitions: 1);
+        s.Pull(false);
+        s.Updates();
+
+        await s.Detail(TamperOn);
+        Assert.Equal(new[] { "p1 on:tamper" }, s.Updates());
+        s.Read(1, true);
+        Assert.Empty(s.Updates());
+        await s.Detail(TamperOff);
+        Assert.Equal(new[] { "p1 on:" }, s.Updates());
+        s.Read(1, false);
+        Assert.Equal(new[] { "p1 off:" }, s.Updates());
+
+        // Troubles the set does not explain: "unknown", next to a later label, until a read says no troubles.
+        s.Read(1, true);
+        Assert.Equal(new[] { "p1 on:unknown" }, s.Updates());
+        await s.Detail(AcOn);
+        Assert.Equal(new[] { "p1 on:ac_failure,unknown" }, s.Updates());
+        s.Read(1, true);
+        Assert.Empty(s.Updates());
+        s.Read(1, false);
+        Assert.Equal(new[] { "p1 off:" }, s.Updates());
+        Assert.Empty(s.Session.Conditions.ActiveTroubles);
+    }
+
+    [Fact]
+    public async Task Partitions_that_agree_change_together_with_one_frame_each()
+    {
+        // Rounds in which every partition's read gives the same answer: both partitions always show the same list, and
+        // there is exactly one frame per partition that changed, with no transient "unknown".
+        await using var s = await StartAsync();
+        s.Pull(false, false);
+        s.Updates();
+
+        void Round(bool troubles, params string[] expected)
+        {
+            s.Read(1, troubles);
+            s.Read(2, troubles);
+            Assert.Equal(expected, s.Updates());
+            Assert.Equal(s.StateOf(1), s.StateOf(2));
+        }
+
+        Round(true, "p1 on:unknown", "p2 on:unknown");
+        await s.Detail(AcOn);
+        Assert.Equal(new[] { "p1 on:ac_failure,unknown", "p2 on:ac_failure,unknown" }, s.Updates());
+        Round(true);
+        Round(false, "p1 off:", "p2 off:");
+        await s.Detail(TamperOn);
+        Assert.Equal(new[] { "p1 on:tamper", "p2 on:tamper" }, s.Updates());
+        Round(true);
+        Round(false, "p1 off:", "p2 off:");
+        await s.Detail(TamperOn);
+        s.Updates();
+        await s.Detail(TamperOff);
+        Assert.Equal(new[] { "p1 on:", "p2 on:" }, s.Updates());
+        Round(false, "p1 off:", "p2 off:");
+        Round(false);
+        Assert.Equal("off:", s.StateOf(1));
     }
 
     [Fact]
     public async Task Partitions_that_report_differently_do_not_flap()
     {
-        // No trouble detail at all; partition 1 reports troubles, partition 2 none, round after round.
+        // If partitions ever disagree on TroublesPresent (the troubles are assumed to be panel-wide, which is not
+        // verified), each keeps what its own reads give, round after round.
         await using var s = await StartAsync();
         s.Pull(false, false);
         s.Updates();
@@ -145,16 +211,29 @@ public class TroubleTypeTests
             Assert.Empty(s.Updates());
         }
 
-        // A trouble detail turns partition 2 on as well; its own read that says no troubles clears what the detail
-        // turned on, but not partition 1, whose own read reports troubles.
+        // A trouble detail turns partition 2 on as well. Its next read, which says no troubles, then clears every
+        // partition, as the panel-wide rule says; partition 1 comes back with its own next read.
         await s.Detail(AcOn);
-        Assert.Equal(new[] { "p1 on:ac_failure,unknown", "p2 on:ac_failure" }, s.Updates());
+        Assert.Equal(new[] { "p1 on:ac_failure,unknown", "p2 on:ac_failure,unknown" }, s.Updates());
         s.Read(1, true);
         s.Read(2, false);
-        Assert.Equal(new[] { "p1 on:unknown", "p2 off:" }, s.Updates());
+        Assert.Equal(new[] { "p1 off:", "p2 off:" }, s.Updates());
+        s.Read(1, true);
+        s.Read(2, false);
+        Assert.Equal(new[] { "p1 on:unknown" }, s.Updates());
         s.Read(1, true);
         s.Read(2, false);
         Assert.Empty(s.Updates());
+
+        // The other way round: partition 1 says none, partition 2 troubles.
+        s.Read(1, false);
+        Assert.Equal(new[] { "p1 off:" }, s.Updates());
+        for (int round = 0; round < 3; round++)
+        {
+            s.Read(1, false);
+            s.Read(2, true);
+        }
+        Assert.Equal(new[] { "p2 on:unknown" }, s.Updates());
     }
 
     [Fact]
@@ -246,14 +325,13 @@ public class TroubleTypeTests
     public async Task Other_tuples_are_named_by_their_bytes_and_sorted_before_unknown(string payload, string label)
     {
         await using var s = await StartAsync();
-        s.Pull(true, false);
+        s.Pull(true, true);
         s.Updates();
 
         await s.Detail(payload);
         await s.Detail(TamperOn);
-        var expected = new[] { label, "tamper" }.OrderBy(l => l, StringComparer.Ordinal).ToList();
-        Assert.Equal(string.Join(",", expected.Append("unknown")), s.StateOf(1)[3..]);
-        Assert.Equal(string.Join(",", expected), s.StateOf(2)[3..]);
+        var expected = string.Join(",", new[] { label, "tamper" }.OrderBy(l => l, StringComparer.Ordinal).Append("unknown"));
+        Assert.Equal(("on:" + expected, "on:" + expected), (s.StateOf(1), s.StateOf(2)));
     }
 
     [Fact]
