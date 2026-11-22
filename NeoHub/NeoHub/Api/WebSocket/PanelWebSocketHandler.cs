@@ -256,16 +256,21 @@ namespace NeoHub.Api.WebSocket
                         SessionId = sessionId,
                         Name = sessionId,
                         Partitions = partitions
-                            .Select(kvp => new PartitionDto
+                            .Select(kvp =>
                             {
-                                PartitionNumber = kvp.Key,
-                                Name = kvp.Value.DisplayName,
-                                Status = kvp.Value.EffectiveStatus,
-                                Ready = ReadyForClients(kvp.Value),
-                                Troubles = kvp.Value.TroublesPresent,
-                                TroubleTypes = kvp.Value.TroubleTypes,
-                                Siren = kvp.Value.SirenActive,
-                                AlarmMemory = kvp.Value.AlarmsInMemory
+                                // Read once: the conditions of one moment, even while they change.
+                                var conditions = kvp.Value.ConditionValues;
+                                return new PartitionDto
+                                {
+                                    PartitionNumber = kvp.Key,
+                                    Name = kvp.Value.DisplayName,
+                                    Status = kvp.Value.EffectiveStatus,
+                                    Ready = ReadyForClients(kvp.Value),
+                                    Troubles = conditions.TroublesPresent,
+                                    TroubleTypes = TroubleTypesForClients(conditions),
+                                    Siren = conditions.SirenActive,
+                                    AlarmMemory = conditions.AlarmsInMemory
+                                };
                             })
                             .ToList(),
                         Zones = zones
@@ -597,9 +602,12 @@ namespace NeoHub.Api.WebSocket
                 return;
             }
 
+            // Read once: the conditions of one moment, even while another thread changes them.
+            var conditions = e.Partition.ConditionValues;
+
             _logger.LogDebug("Broadcasting partition_update: Session={SessionId}, Partition={Partition}, Status={Status}, Ready={Ready}, Troubles={Troubles}, Siren={Siren}, AlarmMemory={AlarmMemory}",
-                e.SessionId, e.Partition.PartitionNumber, e.Partition.EffectiveStatus, ReadyForClients(e.Partition), e.Partition.TroublesPresent,
-                e.Partition.SirenActive, e.Partition.AlarmsInMemory);
+                e.SessionId, e.Partition.PartitionNumber, e.Partition.EffectiveStatus, ReadyForClients(e.Partition), conditions.TroublesPresent,
+                conditions.SirenActive, conditions.AlarmsInMemory);
 
             // Raised for every partition update, including a ready-status, trouble, trouble type, siren or alarm memory
             // change with no status change.
@@ -609,10 +617,10 @@ namespace NeoHub.Api.WebSocket
                 PartitionNumber = e.Partition.PartitionNumber,
                 Status = e.Partition.EffectiveStatus,
                 Ready = ReadyForClients(e.Partition),
-                Troubles = e.Partition.TroublesPresent,
-                TroubleTypes = e.Partition.TroubleTypes,
-                Siren = e.Partition.SirenActive,
-                AlarmMemory = e.Partition.AlarmsInMemory
+                Troubles = conditions.TroublesPresent,
+                TroubleTypes = TroubleTypesForClients(conditions),
+                Siren = conditions.SirenActive,
+                AlarmMemory = conditions.AlarmsInMemory
             };
 
             _ = BroadcastMessageAsync(message);
@@ -713,6 +721,10 @@ namespace NeoHub.Api.WebSocket
         /// </summary>
         private static bool ReadyForClients(Services.Models.PartitionState partition) =>
             partition.IsReady && partition.EffectiveStatus == Services.Models.PartitionStatus.Disarmed;
+
+        /// <summary>The trouble types sent to clients: always [] while the partition's troubles flag is off.</summary>
+        private static IReadOnlyList<string> TroubleTypesForClients(Services.Models.PartitionConditionValues conditions) =>
+            conditions.TroublesPresent ? conditions.TroubleTypes : Array.Empty<string>();
 
         private static string DetermineDeviceClass(Services.Models.ZoneState zone)
         {

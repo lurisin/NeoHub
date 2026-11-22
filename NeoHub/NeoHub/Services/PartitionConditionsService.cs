@@ -514,8 +514,10 @@ namespace NeoHub.Services
 
         private readonly record struct Visible(bool Troubles, string TroubleTypes, bool Siren, bool AlarmMemory);
 
-        private static Visible VisibleOf(PartitionState p) =>
-            new(p.TroublesPresent, string.Join(",", p.TroubleTypes), p.SirenActive, p.AlarmsInMemory);
+        private static Visible VisibleOf(PartitionState p) => VisibleOf(p.ConditionValues);
+
+        private static Visible VisibleOf(PartitionConditionValues c) =>
+            new(c.TroublesPresent, string.Join(",", c.TroubleTypes), c.SirenActive, c.AlarmsInMemory);
 
         /// <summary>The visible state of each partition, creating the per-partition entries first.</summary>
         private static Dictionary<PartitionState, Visible> Capture(PanelConditionsState c, List<PartitionState> partitions)
@@ -561,12 +563,15 @@ namespace NeoHub.Services
                     : labels;
 
                 var old = before[p];
-                p.TroublesPresent = flag;
-                if (string.Join(",", types) != old.TroubleTypes)
-                    p.TroubleTypes = types;
-                p.SirenActive = entry.SirenFromBell || entry.SirenFromBit;
-                p.AlarmsInMemory = entry.AlarmMemory;
-                if (VisibleOf(p) == old)
+                // One assignment, so readers outside the gate (full_state, partition_update) see one moment.
+                var current = p.ConditionValues;
+                var values = new PartitionConditionValues(
+                    flag,
+                    string.Join(",", types) != old.TroubleTypes ? types : current.TroubleTypes,
+                    entry.SirenFromBell || entry.SirenFromBit,
+                    entry.AlarmMemory);
+                p.ConditionValues = values;
+                if (VisibleOf(values) == old)
                     continue;
 
                 changed.Add(p);
@@ -574,10 +579,10 @@ namespace NeoHub.Services
                     continue;
                 if (flag != old.Troubles)
                     log.LogInformation("Partition {Partition} troubles {Troubles}", p.PartitionNumber, flag ? "present" : "cleared");
-                if (p.SirenActive != old.Siren)
-                    log.LogInformation("Partition {Partition} siren {Siren}", p.PartitionNumber, p.SirenActive ? "on" : "off");
-                if (p.AlarmsInMemory != old.AlarmMemory)
-                    log.LogInformation("Partition {Partition} alarm memory {AlarmMemory}", p.PartitionNumber, p.AlarmsInMemory ? "set" : "cleared");
+                if (values.SirenActive != old.Siren)
+                    log.LogInformation("Partition {Partition} siren {Siren}", p.PartitionNumber, values.SirenActive ? "on" : "off");
+                if (values.AlarmsInMemory != old.AlarmMemory)
+                    log.LogInformation("Partition {Partition} alarm memory {AlarmMemory}", p.PartitionNumber, values.AlarmsInMemory ? "set" : "cleared");
                 // Never recreates a partition or session that was removed meanwhile.
                 _panelState.TryUpdatePartition(sessionId, p);
             }
