@@ -17,6 +17,28 @@ namespace NeoHub.Services.Models
         public Dictionary<byte, ZoneState> Zones { get; } = new();
 
         /// <summary>
+        /// Guards the structure of <see cref="Partitions"/> and <see cref="Zones"/>: <see cref="NeoHub.Services.PanelStateService"/>
+        /// adds and looks up entries under it, and code that enumerates them away from the UI takes a copy under it
+        /// (<see cref="CopyPartitions"/>, <see cref="CopyZones"/>). A Dictionary is not safe for a write concurrent with
+        /// another write or with an enumeration. Never held while an event is raised.
+        /// </summary>
+        internal object CollectionsLock { get; } = new();
+
+        /// <summary>A copy of <see cref="Partitions"/>, safe while partitions are being added.</summary>
+        public Dictionary<byte, PartitionState> CopyPartitions()
+        {
+            lock (CollectionsLock)
+                return new Dictionary<byte, PartitionState>(Partitions);
+        }
+
+        /// <summary>A copy of <see cref="Zones"/>, safe while zones are being added.</summary>
+        public Dictionary<byte, ZoneState> CopyZones()
+        {
+            lock (CollectionsLock)
+                return new Dictionary<byte, ZoneState>(Zones);
+        }
+
+        /// <summary>
         /// User slots and user-read operation state. Parallels <see cref="Configuration"/>.
         /// </summary>
         public PanelUserListState UserList { get; } = new();

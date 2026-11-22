@@ -375,16 +375,8 @@ namespace NeoHub.Services
         /// <summary>Queues every partition of the session as a pending re-read.</summary>
         private void QueueAllPartitions(SessionWorker worker)
         {
-            byte[] partitions;
-            try
-            {
-                partitions = _panelState.GetPartitions(worker.SessionId).Keys.ToArray();
-            }
-            catch (InvalidOperationException)
-            {
-                // The partition dictionary changed while it was copied; the next periodic round reads them all.
-                return;
-            }
+            // GetPartitions returns a copy, taken safely while the connect pull adds partitions.
+            var partitions = _panelState.GetPartitions(worker.SessionId).Keys.ToArray();
 
             lock (worker.Gate)
                 worker.Pending.UnionWith(partitions);
@@ -392,16 +384,7 @@ namespace NeoHub.Services
 
         private async Task RunRoundAsync(SessionWorker worker, CancellationToken ct)
         {
-            byte[] partitions;
-            try
-            {
-                partitions = _panelState.GetPartitions(worker.SessionId).Keys.OrderBy(p => p).ToArray();
-            }
-            catch (InvalidOperationException)
-            {
-                // The partition dictionary changed while it was copied; the next round reads it again.
-                return;
-            }
+            var partitions = _panelState.GetPartitions(worker.SessionId).Keys.OrderBy(p => p).ToArray();
 
             lock (worker.Gate)
                 worker.FailingPartitions.IntersectWith(partitions);   // forget partitions that are gone

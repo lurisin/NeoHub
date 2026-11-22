@@ -424,7 +424,8 @@ namespace NeoHub.Services
             var session = _panelState.GetSession(sessionId);
             PartitionState? partition = null;
             if (session is not null && partitionNumber is >= 1 and <= byte.MaxValue)
-                session.Partitions.TryGetValue((byte)partitionNumber, out partition);
+                lock (session.CollectionsLock)
+                    session.Partitions.TryGetValue((byte)partitionNumber, out partition);
             if (session is null || partition is null)
             {
                 log.LogInformation("Ignoring the {What} notification of partition {Partition}: not a known partition of the session", what, partitionNumber);
@@ -499,23 +500,16 @@ namespace NeoHub.Services
             c.LastTroubleSetChangeAt = ++c.Sequence;
         }
 
-        /// <summary>The session's partitions, plus one the connect pull has not stored yet. The pull may add partitions meanwhile.</summary>
+        /// <summary>
+        /// The session's partitions, plus one the connect pull has not stored yet. The pull may add partitions
+        /// meanwhile, so the copy is taken under the session's collections lock.
+        /// </summary>
         private static List<PartitionState> Snapshot(SessionState session, PartitionState? extra)
         {
-            for (int attempt = 0; ; attempt++)
-            {
-                try
-                {
-                    var list = session.Partitions.Values.ToList();
-                    if (extra is not null && !list.Contains(extra))
-                        list.Add(extra);
-                    return list;
-                }
-                catch (InvalidOperationException) when (attempt < 20)
-                {
-                    Thread.Yield();
-                }
-            }
+            var list = session.CopyPartitions().Values.ToList();
+            if (extra is not null && !list.Contains(extra))
+                list.Add(extra);
+            return list;
         }
 
         private readonly record struct Visible(bool Troubles, string TroubleTypes, bool Siren, bool AlarmMemory);

@@ -64,27 +64,35 @@ namespace NeoHub.Services
         public PartitionState? GetPartition(string sessionId, byte partitionNumber)
         {
             var session = GetSession(sessionId);
-            return session?.Partitions.TryGetValue(partitionNumber, out var partition) == true ? partition : null;
+            if (session is null)
+                return null;
+            lock (session.CollectionsLock)
+                return session.Partitions.TryGetValue(partitionNumber, out var partition) ? partition : null;
         }
 
+        /// <summary>A copy of the session's partitions (empty without the session), safe while partitions are added.</summary>
         public IReadOnlyDictionary<byte, PartitionState> GetPartitions(string sessionId)
         {
             var session = GetSession(sessionId);
-            return session?.Partitions ?? new Dictionary<byte, PartitionState>();
+            return session?.CopyPartitions() ?? new Dictionary<byte, PartitionState>();
         }
 
         public void UpdatePartition(string sessionId, PartitionState partition)
         {
             var session = GetOrCreateSession(sessionId);
-            session.Partitions[partition.PartitionNumber] = partition;
+            lock (session.CollectionsLock)
+                session.Partitions[partition.PartitionNumber] = partition;
             PublishPartitionUpdate(sessionId, session, partition);
         }
 
         public bool TryUpdatePartition(string sessionId, PartitionState partition)
         {
-            if (!_sessions.TryGetValue(sessionId, out var session)
-                || !session.Partitions.TryGetValue(partition.PartitionNumber, out var stored)
-                || !ReferenceEquals(stored, partition))
+            if (!_sessions.TryGetValue(sessionId, out var session))
+                return false;
+            PartitionState? stored;
+            lock (session.CollectionsLock)
+                session.Partitions.TryGetValue(partition.PartitionNumber, out stored);
+            if (!ReferenceEquals(stored, partition))
                 return false;
 
             PublishPartitionUpdate(sessionId, session, partition);
@@ -113,19 +121,24 @@ namespace NeoHub.Services
         public ZoneState? GetZone(string sessionId, byte zoneNumber)
         {
             var session = GetSession(sessionId);
-            return session?.Zones.TryGetValue(zoneNumber, out var zone) == true ? zone : null;
+            if (session is null)
+                return null;
+            lock (session.CollectionsLock)
+                return session.Zones.TryGetValue(zoneNumber, out var zone) ? zone : null;
         }
 
+        /// <summary>A copy of the session's zones (empty without the session), safe while zones are added.</summary>
         public IReadOnlyDictionary<byte, ZoneState> GetZones(string sessionId)
         {
             var session = GetSession(sessionId);
-            return session?.Zones ?? new Dictionary<byte, ZoneState>();
+            return session?.CopyZones() ?? new Dictionary<byte, ZoneState>();
         }
 
         public void UpdateZone(string sessionId, ZoneState zone)
         {
             var session = GetOrCreateSession(sessionId);
-            session.Zones[zone.ZoneNumber] = zone;
+            lock (session.CollectionsLock)
+                session.Zones[zone.ZoneNumber] = zone;
             session.LastUpdated = DateTime.UtcNow;
             session.LastMessageAt = DateTime.UtcNow;
 

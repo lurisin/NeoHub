@@ -71,8 +71,16 @@ namespace NeoHub.Services.Handlers
 
             partition.LastUpdated = notification.ReceivedAt;
 
-            // A missed "bell off" must not hide the next alarm: any arm or disarm turns the siren off.
-            _conditions?.ClearSirenForArmDisarm(sessionId, partition, _logger);
+            // A missed "bell off" must not hide the next alarm: any arm or disarm turns the siren off. Whatever
+            // happens there, the arm or disarm itself is still stored and announced.
+            try
+            {
+                _conditions?.ClearSirenForArmDisarm(sessionId, partition, _logger);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not clear the siren of partition {Partition} for the arm or disarm", msg.Partition);
+            }
 
             _service.UpdatePartition(sessionId, partition);
 
