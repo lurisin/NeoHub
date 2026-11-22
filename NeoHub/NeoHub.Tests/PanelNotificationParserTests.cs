@@ -79,6 +79,7 @@ public class PanelNotificationParserTests
     [InlineData("01-01-03")]         // no state
     [InlineData("01-01")]
     [InlineData("00-03-01")]         // zero-length CompactInt
+    [InlineData("00-FF-01")]         // the same, as another integration reads this message: not partition 0
     [InlineData("05-FF-FF-FF-FF-FF-03-01")] // partition does not fit an int
     [InlineData("")]
     public void Malformed_keypad_alarm_is_not_parsed(string payload)

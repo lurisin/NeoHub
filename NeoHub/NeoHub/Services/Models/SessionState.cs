@@ -51,6 +51,13 @@ namespace NeoHub.Services.Models
         public PanelConditionsState Conditions { get; } = new();
 
         /// <summary>
+        /// The last keypad alarm (ModuleStatus_Miscellaneous_NonZone_Alarm_Status with state 01) of this session, or
+        /// null. Kept in memory only, with this state: across a takeover by a newer connection, not across a
+        /// disconnect or a NeoHub restart.
+        /// </summary>
+        public KeypadAlarmRecord? LastKeypadAlarm { get; set; }
+
+        /// <summary>
         /// When this session was established.
         /// </summary>
         public DateTime ConnectedAt { get; set; } = DateTime.UtcNow;

@@ -20,6 +20,7 @@ namespace NeoHub.Api.WebSocket.Models
     [JsonDerivedType(typeof(ZoneUpdateMessage), "zone_update")]
     [JsonDerivedType(typeof(ErrorMessage), "error")]
     [JsonDerivedType(typeof(CommandResultMessage), "command_result")]
+    [JsonDerivedType(typeof(KeypadAlarmMessage), "keypad_alarm")]
     public abstract record WebSocketMessage;
 
     #region Client → Server
@@ -154,6 +155,23 @@ namespace NeoHub.Api.WebSocket.Models
         public string? Message { get; init; }
     }
 
+    /// <summary>
+    /// The panel reported a keypad alarm (Fire / Auxiliary / Panic keys; ModuleStatus_Miscellaneous_NonZone_Alarm_Status
+    /// with state 01). Broadcast for any partition number, also one the client does not know (for example 0). The
+    /// partition's status is not changed by it. The kind is "alarm_type" because "type" is the message discriminator.
+    /// </summary>
+    public record KeypadAlarmMessage : WebSocketMessage
+    {
+        public required string SessionId { get; init; }
+        public required int Partition { get; init; }
+        /// <summary>"fire" (alarm type 03) or "unknown" (any other value).</summary>
+        public required string AlarmType { get; init; }
+        /// <summary>The raw alarm type byte.</summary>
+        public required int Code { get; init; }
+        /// <summary>When NeoHub received it: UTC, ISO 8601 with milliseconds, NeoHub's clock.</summary>
+        public required string Time { get; init; }
+    }
+
     #endregion
 
     #region DTOs
@@ -164,6 +182,16 @@ namespace NeoHub.Api.WebSocket.Models
         public required string Name { get; init; }
         public required List<PartitionDto> Partitions { get; init; }
         public required List<ZoneDto> Zones { get; init; }
+        /// <summary>The session's last keypad alarm, or null (SessionState.LastKeypadAlarm).</summary>
+        public KeypadAlarmDto? LastKeypadAlarm { get; init; }
+    }
+
+    public record KeypadAlarmDto
+    {
+        public required int Partition { get; init; }
+        public required string AlarmType { get; init; }
+        public required int Code { get; init; }
+        public required string Time { get; init; }
     }
 
     public record PartitionDto

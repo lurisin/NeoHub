@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -22,6 +23,7 @@ namespace NeoHub.Api.WebSocket
         private readonly ISessionMonitor _sessionMonitor;
         private readonly ILogger<PanelWebSocketHandler> _logger;
         private readonly IFapCommandSettings? _fapSettings;
+        private readonly PartitionConditionsService? _conditions;
         private readonly ConcurrentDictionary<System.Net.WebSockets.WebSocket, byte> _connectedClients = new();
 
         /// <summary>Without FAP settings: activate_fap is always refused and "fap" never advertised.</summary>
@@ -35,6 +37,7 @@ namespace NeoHub.Api.WebSocket
         {
         }
 
+        /// <summary>Without the conditions service: no keypad_alarm messages.</summary>
         public PanelWebSocketHandler(
             IPanelStateService panelState,
             IPanelCommandService commandService,
@@ -42,6 +45,18 @@ namespace NeoHub.Api.WebSocket
             ISessionMonitor sessionMonitor,
             ILogger<PanelWebSocketHandler> logger,
             IFapCommandSettings? fapSettings)
+            : this(panelState, commandService, sessionManager, sessionMonitor, logger, fapSettings, conditions: null)
+        {
+        }
+
+        public PanelWebSocketHandler(
+            IPanelStateService panelState,
+            IPanelCommandService commandService,
+            IITv2SessionManager sessionManager,
+            ISessionMonitor sessionMonitor,
+            ILogger<PanelWebSocketHandler> logger,
+            IFapCommandSettings? fapSettings,
+            PartitionConditionsService? conditions)
         {
             _panelState = panelState;
             _commandService = commandService;
@@ -49,6 +64,7 @@ namespace NeoHub.Api.WebSocket
             _sessionMonitor = sessionMonitor;
             _logger = logger;
             _fapSettings = fapSettings;
+            _conditions = conditions;
 
             _logger.LogInformation("PanelWebSocketHandler initialized. Subscribed to state change events.");
 
@@ -58,6 +74,8 @@ namespace NeoHub.Api.WebSocket
             _panelState.ConfigurationComplete += OnConfigurationComplete;
             if (_fapSettings is not null)
                 _fapSettings.Changed += OnFapSettingChanged;
+            if (_conditions is not null)
+                _conditions.KeypadAlarm += OnKeypadAlarm;
         }
 
         public async Task HandleConnectionAsync(HttpContext context)
@@ -231,6 +249,7 @@ namespace NeoHub.Api.WebSocket
                 {
                     var partitions = _panelState.GetPartitions(sessionId);
                     var zones = _panelState.GetZones(sessionId);
+                    var lastKeypadAlarm = _panelState.GetSession(sessionId)?.LastKeypadAlarm;
 
                     return new SessionDto
                     {
@@ -257,7 +276,14 @@ namespace NeoHub.Api.WebSocket
                                 Bypassed = kvp.Value.IsBypassed,
                                 Partitions = kvp.Value.Partitions
                             })
-                            .ToList()
+                            .ToList(),
+                        LastKeypadAlarm = lastKeypadAlarm is null ? null : new KeypadAlarmDto
+                        {
+                            Partition = lastKeypadAlarm.Partition,
+                            AlarmType = lastKeypadAlarm.AlarmType,
+                            Code = lastKeypadAlarm.Code,
+                            Time = FormatTime(lastKeypadAlarm.Time)
+                        }
                     };
                 })
                 .ToList();
@@ -490,7 +516,7 @@ namespace NeoHub.Api.WebSocket
         /// Sent in full_state so clients know which optional protocol features they can use, in this order. New
         /// capabilities are appended here; "fap" always comes last (<see cref="CurrentCapabilities"/>).
         /// </summary>
-        private static readonly string[] _capabilities = { "command_result", "partition_ready", "partition_troubles", "trouble_types" };
+        private static readonly string[] _capabilities = { "command_result", "partition_ready", "partition_troubles", "trouble_types", "keypad_alarms" };
 
         /// <summary>Advertised, last, only while AllowFapCommands is on.</summary>
         internal const string FapCapability = "fap";
@@ -587,6 +613,27 @@ namespace NeoHub.Api.WebSocket
             _ = BroadcastMessageAsync(message);
         }
 
+        private void OnKeypadAlarm(object? sender, KeypadAlarmEventArgs e)
+        {
+            if (string.IsNullOrWhiteSpace(e.SessionId))
+            {
+                _logger.LogWarning("Ignoring keypad alarm with empty sessionId");
+                return;
+            }
+
+            _logger.LogDebug("Broadcasting keypad_alarm: Session={SessionId}, Partition={Partition}, AlarmType={AlarmType}, Code={Code}",
+                e.SessionId, e.Alarm.Partition, e.Alarm.AlarmType, e.Alarm.Code);
+
+            _ = BroadcastMessageAsync(new KeypadAlarmMessage
+            {
+                SessionId = e.SessionId,
+                Partition = e.Alarm.Partition,
+                AlarmType = e.Alarm.AlarmType,
+                Code = e.Alarm.Code,
+                Time = FormatTime(e.Alarm.Time)
+            });
+        }
+
         private void OnZoneChanged(object? sender, ZoneStateChangedEventArgs e)
         {
             if (string.IsNullOrWhiteSpace(e.SessionId))
@@ -648,6 +695,10 @@ namespace NeoHub.Api.WebSocket
         #endregion
 
         #region Helpers
+
+        /// <summary>A UTC time for clients: ISO 8601 with milliseconds and "Z".</summary>
+        internal static string FormatTime(DateTime utc) =>
+            DateTime.SpecifyKind(utc, DateTimeKind.Utc).ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
 
         /// <summary>
         /// The "ready" flag sent to clients: the panel's ready flag while the partition is disarmed, otherwise false.

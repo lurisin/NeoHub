@@ -18,6 +18,12 @@ namespace NeoHub.Services
         public required string SessionId { get; init; }
     }
 
+    public sealed class KeypadAlarmEventArgs : EventArgs
+    {
+        public required string SessionId { get; init; }
+        public required KeypadAlarmRecord Alarm { get; init; }
+    }
+
     /// <summary>
     /// Derives the partitions' trouble flag (<see cref="PartitionState.TroublesPresent"/>) and trouble types
     /// (<see cref="PartitionState.TroubleTypes"/>) from the status reads (<see cref="ModulePartitionStatus"/>: the connect
@@ -51,6 +57,10 @@ namespace NeoHub.Services
         /// <summary>Trouble type of troubles a status read reports but no trouble detail explains.</summary>
         public const string UnknownTroubleType = "unknown";
 
+        /// <summary>Keypad alarm types: alarm type 03 is the fire alarm; any other value is not identified.</summary>
+        public const string FireKeypadAlarm = "fire";
+        public const string UnknownKeypadAlarm = "unknown";
+
         /// <summary>Labels of the proven tuples (value bytes as received). These names are a stable API.</summary>
         private static readonly IReadOnlyDictionary<string, string> KnownTroubleTypes = new Dictionary<string, string>(StringComparer.Ordinal)
         {
@@ -75,6 +85,9 @@ namespace NeoHub.Services
 
         /// <summary>A state 00 left the set of active troubles empty: the session's partitions should be read again soon.</summary>
         public event EventHandler<TroubleRereadRequestedEventArgs>? TroubleRereadRequested;
+
+        /// <summary>The panel reported a keypad alarm (state 01), for any partition number.</summary>
+        public event EventHandler<KeypadAlarmEventArgs>? KeypadAlarm;
 
         /// <summary>The trouble type of a tuple: its label when proven, otherwise unknown_&lt;A&gt;_&lt;B&gt;_&lt;C&gt;.</summary>
         public static string TroubleTypeLabel(TroubleDetail detail) =>
@@ -235,6 +248,32 @@ namespace NeoHub.Services
 
             if (reread)
                 TroubleRereadRequested?.Invoke(this, new TroubleRereadRequestedEventArgs { SessionId = sessionId });
+        }
+
+        #endregion
+
+        #region Keypad alarms (0x0841)
+
+        /// <summary>The keypad alarm type of a raw alarm type byte.</summary>
+        public static string KeypadAlarmType(byte alarmType) =>
+            alarmType == NonZoneAlarmStatusNotification.FireAlarmType ? FireKeypadAlarm : UnknownKeypadAlarm;
+
+        /// <summary>
+        /// Applies a parsed 0x0841 and logs it at Information. A state 01 is kept as the session's last keypad alarm and
+        /// announced (<see cref="KeypadAlarm"/>), for any partition number; a state 00 is only logged. Partition states
+        /// are not changed.
+        /// </summary>
+        public void ApplyKeypadAlarm(string sessionId, NonZoneAlarmStatus status, DateTime receivedAtUtc, ILogger log)
+        {
+            var type = KeypadAlarmType(status.AlarmType);
+            log.LogInformation("Keypad alarm {AlarmType} (code {Code}) on partition {Partition} {AlarmState}",
+                type, status.AlarmType, status.Partition, status.Active ? "active" : "restored");
+            if (!status.Active)
+                return;
+
+            var alarm = new KeypadAlarmRecord(status.Partition, type, status.AlarmType, receivedAtUtc);
+            GetOrCreateSession(sessionId).LastKeypadAlarm = alarm;
+            KeypadAlarm?.Invoke(this, new KeypadAlarmEventArgs { SessionId = sessionId, Alarm = alarm });
         }
 
         #endregion

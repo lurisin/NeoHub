@@ -25,7 +25,7 @@ internal sealed class TestHost : IAsyncDisposable
     public const string SessionId = "TESTSESSION";
 
     /// <summary>The capabilities full_state lists, in order, while FAP commands are off ("fap" follows when on).</summary>
-    public static readonly string[] BaseCapabilities = { "command_result", "partition_ready", "partition_troubles", "trouble_types" };
+    public static readonly string[] BaseCapabilities = { "command_result", "partition_ready", "partition_troubles", "trouble_types", "keypad_alarms" };
 
     private static readonly MethodInfo ProcessMessage =
         typeof(PanelWebSocketHandler).GetMethod("ProcessMessageAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
