@@ -153,4 +153,61 @@ public class TroubleDetailFlowTests
         real.Transport.EndInbound();
         await loop.WaitAsync(TimeSpan.FromSeconds(5));
     }
+
+    /// <summary>
+    /// A restore that empties the set after the connect pull has read the partition status but before the pull has
+    /// finished (zone status still outstanding), when no refresh worker exists yet: the extra read still happens once
+    /// the refresh starts, not one interval later.
+    /// </summary>
+    [Theory]
+    [InlineData(10)]
+    [InlineData(0)]
+    public async Task A_restore_before_the_refresh_has_started_still_gets_its_extra_read(int interval)
+    {
+        var saved = PartitionTroubleRefreshService.ExtraReadDelay;
+        PartitionTroubleRefreshService.ExtraReadDelay = TimeSpan.FromMilliseconds(200);
+        try
+        {
+            await using var host = await TestHost.StartAsync(interval);
+            var panel = new FakePanel { HoldZoneStatus = new TaskCompletionSource() };
+            var session = host.NewSession(panel, "A");
+            var loop = host.Connect(session);
+            Assert.True(await TestHost.WaitUntil(() => host.State.GetSession(Id)?.Conditions.ConnectPullDone == true, 10));
+            Assert.Equal(0, host.RefreshWorkers());
+
+            session.Notify(Detail(TamperOn));
+            Assert.True(await TestHost.WaitUntil(() => StateOf(host, 1) == "on:tamper"));
+            session.Notify(Detail(TamperOff));
+            var expected = interval > 0 ? "on:" : "off:";   // with the refresh off the flag follows the set
+            Assert.True(await TestHost.WaitUntil(() => StateOf(host, 1) == expected));
+            var reads = StatusReads(panel);
+
+            panel.HoldZoneStatus.SetResult();
+            await host.Manager.LifecycleIdleAsync(Id).WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.True(await TestHost.WaitUntil(() => host.RefreshWorkers() == 1));
+
+            if (interval > 0)
+            {
+                // Well before the first periodic round (10 s after the pull): both partitions read, flags off.
+                Assert.True(await TestHost.WaitUntil(
+                    () => StateOf(host, 1) == "off:" && StateOf(host, 2) == "off:" && StatusReads(panel) == reads + 2, 3));
+                await Task.Delay(300);
+                Assert.Equal(reads + 2, StatusReads(panel));
+            }
+            else
+            {
+                // Positive control: without the refresh there is no extra read.
+                await Task.Delay(1500);
+                Assert.Equal(reads, StatusReads(panel));
+                Assert.Equal("off:", StateOf(host, 1));
+            }
+
+            session.EndConnection();
+            await loop.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            PartitionTroubleRefreshService.ExtraReadDelay = saved;
+        }
+    }
 }

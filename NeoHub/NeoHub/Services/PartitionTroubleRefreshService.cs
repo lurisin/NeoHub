@@ -32,7 +32,8 @@ namespace NeoHub.Services
     /// When a restored trouble detail leaves the set of active troubles empty
     /// (<see cref="PartitionConditionsService.TroubleRereadRequested"/>), every partition of the session is read once
     /// more <see cref="ExtraReadDelay"/> later, with the same rules as that re-read (skipped when the interval is 0,
-    /// kept while a command waits).
+    /// kept while a command waits). One requested before the session's refresh has started (at the end of the connect
+    /// pull, which has read the status by then) is kept and happens when it starts.
     ///
     /// Reads are sent one at a time per session, are skipped while a <see cref="IPanelCommandService"/> command,
     /// a configuration operation or installer programming is in progress on that session, and wait at most as
@@ -73,6 +74,12 @@ namespace NeoHub.Services
 
         private readonly object _lock = new();
         private readonly Dictionary<string, SessionWorker> _workers = new();
+
+        /// <summary>
+        /// Extra reads requested before a session's worker existed (guarded by <see cref="_lock"/>): the session state
+        /// they are for, and when they are due (Environment.TickCount64).
+        /// </summary>
+        private readonly Dictionary<string, (SessionState State, long DueAt)> _pendingExtraReads = new();
         private bool _stopped;
 
         /// <summary>
@@ -139,6 +146,7 @@ namespace NeoHub.Services
                 _stopped = true;
                 workers = _workers.Values.ToList();
                 _workers.Clear();
+                _pendingExtraReads.Clear();
             }
 
             foreach (var worker in workers)
@@ -167,6 +175,7 @@ namespace NeoHub.Services
                 foreach (var worker in _workers.Values)
                     worker.Cancel();
                 _workers.Clear();
+                _pendingExtraReads.Clear();
             }
         }
 
@@ -190,6 +199,8 @@ namespace NeoHub.Services
                     _workers.Remove(sessionId);
                     stopped.Add(worker);
                 }
+                foreach (var sessionId in _pendingExtraReads.Keys.Where(id => !active.Contains(id)).ToList())
+                    _pendingExtraReads.Remove(sessionId);
             }
 
             foreach (var worker in stopped)
@@ -241,23 +252,37 @@ namespace NeoHub.Services
 
         private void OnTroubleRereadRequested(object? sender, TroubleRereadRequestedEventArgs e)
         {
-            SessionWorker? worker;
-            lock (_lock)
-                _workers.TryGetValue(e.SessionId, out worker);
-
-            if (worker is null)
-            {
-                _logger.LogDebug("No extra trouble read: session {SessionId} has no refresh running", e.SessionId);
-                return;
-            }
-
-            if (GetIntervalSeconds(worker.SessionId) <= 0)
+            if (GetIntervalSeconds(e.SessionId) <= 0)
             {
                 _logger.LogDebug("No extra trouble read: trouble refresh is off");
                 return;
             }
 
-            worker.ScheduleExtraRead(Environment.TickCount64 + (long)ExtraReadDelay.TotalMilliseconds);
+            var dueAt = Environment.TickCount64 + (long)ExtraReadDelay.TotalMilliseconds;
+            SessionWorker? worker;
+            lock (_lock)
+            {
+                if (!_workers.TryGetValue(e.SessionId, out worker))
+                {
+                    // The connect pull has read the status but not finished yet, so no worker runs: keep the request
+                    // for the worker that starts when the pull is done (EnsureWorker), for this session state only.
+                    if (_stopped || _panelState.GetSession(e.SessionId) is not SessionState state)
+                    {
+                        _logger.LogDebug("No extra trouble read: session {SessionId} has no state", e.SessionId);
+                        return;
+                    }
+                    _pendingExtraReads[e.SessionId] = (state, dueAt);
+                }
+            }
+
+            if (worker is null)
+            {
+                _logger.LogDebug("Extra trouble read of every partition in {Delay} s, once the trouble refresh of session {SessionId} starts",
+                    ExtraReadDelay.TotalSeconds, e.SessionId);
+                return;
+            }
+
+            worker.ScheduleExtraRead(dueAt);
             _logger.LogDebug("Extra trouble read of every partition in {Delay} s: no active trouble detail left", ExtraReadDelay.TotalSeconds);
             worker.Wake();
         }
@@ -283,6 +308,11 @@ namespace NeoHub.Services
 
                 replaced = existing;
                 worker = new SessionWorker(sessionId, session);
+                if (_pendingExtraReads.Remove(sessionId, out var pending) && ReferenceEquals(pending.State, session))
+                {
+                    // Not before the pull has released its configuration lock, which it does right after this.
+                    worker.ScheduleExtraRead(Math.Max(pending.DueAt, Environment.TickCount64 + (long)ImmediateRefreshDelay.TotalMilliseconds));
+                }
                 _workers[sessionId] = worker;
                 worker.Completion = Task.Run(() => RunAsync(worker));
             }
