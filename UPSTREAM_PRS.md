@@ -50,7 +50,7 @@ This fork is upstream `master` (61a1a0e) plus these commits, in this order:
 | `Log the first unexpected trouble refresh error at Warning` | Draft PR (section E) |
 | `Explain why the trouble refresh also checks ConfigLock` | Draft PR (section E) |
 | `Update upstream PR draft E after the second review` | Fork only, never submit |
-| `Add an xUnit test project for NeoHub and DSC.TLink` | Optional; the tests of sections F, G and H need it (upstream has no test project) |
+| `Add an xUnit test project for NeoHub and DSC.TLink` | Optional; the tests of sections F, G, H and I need it (upstream has no test project) |
 | `Make closing an ITv2Session idempotent and add AbandonAsync` | Draft PR (section F) |
 | `Let the newest panel connection take over its session id` | Draft PR (section F) |
 | `Add English texts for panel response and NACK codes` | Draft PR (section G) |
@@ -72,6 +72,14 @@ This fork is upstream `master` (61a1a0e) plus these commits, in this order:
 | `Clear the troubles of every partition when one that showed them reads none` | Draft PR (section I) |
 | `Document trouble types, keypad alarms, siren and alarm memory` | README part of section I (and of section G's compatibility note) |
 | `Add upstream PR draft I; research notes in G and H` | Fork only, never submit |
+| `Give the Settings page its own copy of the settings` | Draft PR (section H) |
+| `Read the FAP setting only from the saved settings file` | Draft PR (section H) |
+| `Check the FAP setting again right before the command is written` | Draft PR (section H) |
+| `Guard the partition and zone dictionaries of a session with a lock` | Draft PR (section I); its `PanelStateService` part also fixes an upstream race on its own |
+| `Send the trouble, siren and memory values of one moment to clients` | Draft PR (section I) |
+| `Keep an extra trouble read requested before the refresh has started` | Draft PR (section I) |
+| `Clear every partition when a status read ends troubles the panel named` | Draft PR (section I) |
+| `Update upstream PR drafts F, H and I after review` | Fork only, never submit |
 
 Section C is the research record for fire / auxiliary / panic activation (`ModuleControl_Activate_FAP`, 0x0908). It is now implemented, gated and experimental, as section H.
 Section D is a separate draft PR (command results, panel response codes, an 8 s bound on the panel's answer, partition ready state). It builds on section A.
@@ -725,7 +733,14 @@ Unit tests: every enum member has a text; the listed texts; unknown values; code
   3. `Add the experimental activate_fap WebSocket command`
   4. `Test FAP replies that are only an ack, each gate alone, and a real close`
   5. `Reload the settings right after saving them`
+  6. `Give the Settings page its own copy of the settings`
+  7. `Read the FAP setting only from the saved settings file`
+  8. `Check the FAP setting again right before the command is written`
   The tests need the test project commit and section F's helpers. Commit 4's real-transport test belongs to section F.
+  Commits 6 to 8 came from a review: 6 fixes the upstream Settings page, which edited the live options object before
+  Save (harmless upstream, where no setting was safety-relevant); squash 7 and 8 into 2 and 1 if preferred.
+- **TLink is touched (commit 8):** `SessionCommand` gains `Func<bool>? MayStillSend`, `IITv2Session` (internal) gains
+  `SendGuardedAsync` with a default implementation, and `SessionMediator` the constant `WithdrawnMessage`.
 - **Inferred layout, not verified.** The body `[command sequence][CompactInt partition][type]` with fire 0, auxiliary 1,
   panic 2 and no access code comes from LawPaul/HA_DSC_Neo_ITv2 (GPL-3.0, like NeoHub), `dsc_itv2/messages.py`, class
   `ModuleControlActivateFAP` @776b170. Its docstring says "Layout per dsc-itv2-protocol observations" and "per panel
@@ -759,10 +774,11 @@ An opt-in, experimental WebSocket command that asks the panel to raise a Fire, A
 
 **It raises a real alarm, which the panel reports to the monitoring station.** So:
 
-- **Off by default:** a new application setting, `AllowFapCommands` ("Allow FAP commands", Settings page, "Panel control", with a warning). A settings file without it loads as off. Only the saved value counts; moving the switch without saving does nothing.
+- **Off by default:** a new application setting, `AllowFapCommands` ("Allow FAP commands", Settings page, "Panel control", with a warning). A settings file without it loads as off. Only the value saved in `userSettings.json` counts: moving the switch without saving does nothing, and an environment variable or command-line argument cannot turn it on (one that tries is logged as ignored). The Settings page now edits its own copy of the settings, so an unsaved change no longer shows on a later visit or gets saved with another setting; below the switch it shows whether FAP commands are in effect, and every page shows a red banner while they are.
 - **Fail-closed gate in TLink:** `SessionMediator`, which every caller goes through (web UI, WebSocket API, Dev Console, background reads), refuses an `ActivateFap` unless a registered `IFapCommandPolicy` allows it. It also catches one wrapped in a request or a multiple-message packet. With no policy registered it never sends one. The Dev Console catalog does not list 0x0908.
 - **Strict request:** every field is required, and before any panel traffic the request is checked in this order: `request_id` (without one, the reply is the `error` "activate_fap requires request_id"), the setting ("FAP commands are disabled in the NeoHub settings"), `session_id` (a connected session), `partition` (a JSON integer of 1 or more that is a known partition of the session), and `fap_type` (exactly `fire`, `auxiliary` or `panic`; other casing, numbers or misspellings are refused). The fields are read as raw JSON, so a wrong type gets a failed `command_result`, not a JSON error, and no enum or partition default is ever used. The FAP kind is `fap_type` because `type` is the message discriminator.
 - **Sent once:** through `PanelCommandService`, with the same 8 s bound and `command_result` as arm. It is never retried, and the panel's answer is reported with G's texts and `code_kind`. Without a usable answer (no answer in time, or the session closed while waiting) the reply is "No answer from the panel: the alarm may still have been triggered". Every request and its result are logged at Warning with the client id.
+- **Checked again at the write:** the setting is checked once more right before the packet is written (with the session's send lock held), so a command that waited for the session, for example right after a takeover, is not sent once the setting is off. A command that could not be written before `PanelCommandService` stopped waiting is withdrawn and can never be written later; its reply is "The FAP command was not sent: the panel session was not ready, or ended, before it could be sent".
 - **Capability:** `full_state.capabilities` ends with `"fap"` only while the setting is on, and NeoHub pushes a fresh `full_state` to every client when the setting changes.
 - No FAP button anywhere in the web UI.
 
@@ -777,6 +793,7 @@ Unit and transport-level tests with a real `ITv2Session` on a fake transport:
 - **Settings:** the setting is read from the saved settings, and an unsaved edit has no effect. Saving applies at once, also without a file watcher (commit 5). The capability follows the setting, and a change pushes `full_state`.
 - **Panel replies:** a transport ack and then silence gives the "may still have been triggered" reply with one frame; an ack and then a `CommandResponse` in a later packet is a success. Each gate holds on its own: with the TLink policy allowing FAP, a command service or WebSocket handler built without FAP settings still sends nothing.
 - **Real NeoHub process (no panel):** after the settings file was rewritten, `full_state` with `fap` was pushed within 0.3 s, and the Settings page shows the warning.
+- **Review fixes:** through the real `Program` wiring, an unsaved switch does not show on the next load and is not saved by a later Save of the section, and an environment variable or command-line argument does not turn FAP on. On a real session that is not ready yet, a command whose setting is turned off while it waits sends no frame (positive control: one frame when it stays on), and a command that waited longer than 8 s says "not sent" and sends no frame when the session becomes ready later.
 
 ## Untested
 
@@ -806,7 +823,13 @@ Everything on a real panel: whether 0x0908 with this layout is accepted, which a
   6. `Track the partition siren and alarm memory and send them to clients`
   7. `Clear the troubles of every partition when one that showed them reads none`
   8. the README part of `Document trouble types, keypad alarms, siren and alarm memory`
-  Commits 5 and 7 correct commits 1 and 3; squash them for upstream if preferred.
+  9. `Guard the partition and zone dictionaries of a session with a lock`
+  10. `Send the trouble, siren and memory values of one moment to clients`
+  11. `Keep an extra trouble read requested before the refresh has started`
+  12. `Clear every partition when a status read ends troubles the panel named`
+  Commits 5 and 7 correct commits 1 and 3, and commits 9 to 12 came from a review; squash them for upstream if
+  preferred. Commit 9's `PanelStateService` part fixes a race that upstream has too (full_state enumerates the
+  partition and zone dictionaries while the connect pull adds to them), and can go upstream on its own.
 - **TLink is touched:** new public message classes `TroubleDetailNotification` (0x0823, with `TroubleDetail` and
   `TroubleDetailState`), `NonZoneAlarmStatusNotification` (0x0841, `NonZoneAlarmStatus`),
   `PartitionAudibleBellNotification` (0x023B, `AudibleBell`) and `PartitionAlarmMemoryNotification` (0x023C,
@@ -847,9 +870,24 @@ Everything on a real panel: whether 0x0908 with this layout is accepted, which a
   - The extra read about 3 s after a restore is also requested when the restore finds the set already empty, and it
     is kept (not dropped) while a command waits for the panel, as section E's re-read after a code-1 rejection is; it
     is skipped during configuration or programming.
-  - A "no troubles" read clears the troubles of every partition only when the partition read was showing troubles. A
-    partition that already showed none does not clear the others, so partitions that disagree on TroublesPresent do
-    not flap once per round.
+  - A "no troubles" read clears the troubles of every partition only when the partition read was showing troubles,
+    troubles were turned on by a trouble detail, or it empties a set that was not empty (commit 12; before, during the
+    connect pull a partition could keep its flag with no trouble types for one interval). A partition that already
+    showed none, with nothing in the set, does not clear the others, so partitions that disagree on TroublesPresent do
+    not flap once per round. This is the decided rule for one partition, and a model test shows it on random
+    sequences; with two partitions it differs from the literal rule in two bounded cases, also with partitions that
+    agree but were read at different moments: a partition that still reports troubles keeps its flag (and "unknown")
+    until its own next read, which is in the same round, or one interval later after a re-read of another partition
+    only; with the refresh off (interval 0), until a trouble detail leaves the set empty or the panel reconnects.
+  - A trouble detail from the connect burst updates the set but never keeps a status read from counting (commit 12):
+    it predates the connection, and the connect pull decides.
+  - An extra read requested after the connect pull has read the status but before the trouble refresh has started
+    (the zone status step of a fresh connect) is kept and runs when the refresh starts (commit 11). During a takeover
+    pull the refresh exists and its reads are skipped while the pull holds the configuration lock, as the skip rules
+    say, so there the flag can stay on with no trouble types until the next periodic read.
+  - The four values of a partition (troubles, trouble types, siren, alarm memory) are replaced together, and frames
+    read them once, so a frame never mixes two moments (commit 10); `trouble_types` is `[]` whenever `troubles` is
+    false.
   - The keypad alarm's kind is `alarm_type`, because `type` is the message discriminator, and the message carries
     `time` (NeoHub's clock, UTC). The last one is kept with the session state: it survives a takeover by a newer
     connection, not a panel disconnect or a NeoHub restart. 0x0841 in the connect burst is discarded like the rest of
@@ -859,6 +897,10 @@ Everything on a real panel: whether 0x0908 with this layout is accepted, which a
     keeps a bell "on" that arrived after its own read was requested. The disagreement of a read without the siren bit
     with a bell "on" is logged once per "on".
   - 0x023B and 0x023C of a partition NeoHub does not know are logged and ignored; no partition is created.
+  - Residual risk (decided rule, not changed): on a fresh connect the partitions exist only after the pull's label
+    step, so a bell "on" before that is ignored, and the pull clears a bell "on" that arrived before its own status
+    read was requested. A siren that starts in those seconds reads off until the next bell message, arm or disarm,
+    unless the status bit shows it (never seen set on the real panel so far).
 
 ### PR body
 
@@ -880,7 +922,7 @@ The layouts are inferred from captures of one PowerSeries Neo panel and from oth
 ## Behaviour of the trouble flag
 
 - The connect pull and the re-reads (periodic, after a code-1 rejection, and the new extra read) record when each status request was sent. A read that reports no troubles is not used for troubles if a state 01 trouble detail arrived after its request was sent.
-- A read that reports no troubles from a partition that showed troubles clears the set, `unknown` and the flag of every partition (the troubles are panel-wide). One from a partition that already showed none clears nothing else.
+- A read that reports no troubles from a partition that showed troubles, or one that ends troubles named by trouble details, clears the set, `unknown` and the flag of every partition (the troubles are panel-wide). One from a partition that already showed none, with no trouble detail active, clears nothing else; a partition that still reports troubles then keeps its flag until its own next read.
 - With the periodic re-read off (interval 0), the flags follow the set after each trouble detail.
 - Trouble details in the initial connect burst only update the set; the connect pull decides the flag.
 
@@ -888,6 +930,7 @@ The layouts are inferred from captures of one PowerSeries Neo panel and from oth
 
 - Additive only: existing fields, status values and `ready` are unchanged, and replies to commands without `request_id` are byte-identical. Section E's trouble flag only turns on sooner (with a trouble detail).
 - Clients that do not know `keypad_alarm` ignore it; the Home Assistant integration up to 1.3.0 logs a Warning "Unknown message type" with the frame and goes on.
+- A client that sends the server-only type `keypad_alarm` now gets the `error` "Unknown message type: KeypadAlarmMessage" instead of "Invalid JSON: ... unrecognized type discriminator", as for the other server-only types; no real client sends it.
 
 ## Test evidence
 
@@ -896,7 +939,8 @@ xUnit tests with the captured payload bytes:
 - the captured trouble sequence replayed with interleaved reads, including a "no troubles" read requested before a later state 01, checking `troubles`, `trouble_types` and the frames at each step, with no transient `unknown`; the `unknown` rule; one partition and partitions that agree or disagree; interval 0; trouble details before the connect pull has read the status and in the connect burst of a real `ITv2Session`;
 - keypad alarms (fire, unknown, partition 0, malformed, in a `MultipleMessagePacket`, kept across a takeover);
 - siren on and off, the bit that may set but not clear, the arm/disarm clear in the same frame, alarm memory set and clear with the in-flight rule, unknown partitions, and exactly one frame per change;
-- the fork's reflection harness with the real refresh service and a simulated panel: the same replay with real extra reads, and the in-process soak with a real `ITv2Session` that also receives the captured bytes.
+- the fork's reflection harness with the real refresh service and a simulated panel: the same replay with real extra reads, and the in-process soak with a real `ITv2Session` that also receives the captured bytes;
+- review fixes: arm, disarm and trouble details while partitions are being added (no failure, every arm or disarm announced), full_state while partitions and zones are added, frames that never mix two moments while troubles change on two threads, the extra read requested before the refresh has started, and a model of the trouble rules on 300 random sequences per case.
 
 ## Untested
 

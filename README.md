@@ -327,6 +327,10 @@ The panel opened a new connection before NeoHub noticed that the old one was gon
 - Verify the Integration ID, Type 1, and Type 2 codes in `userSettings.json` **exactly match** the panel programming
 - Type 2 code is case-sensitive hex (A-F must match)
 
+### Trace logs contain access codes
+
+At the Trace log level (Diagnostics page) NeoHub logs the raw bytes of every packet it sends to the panel, including the access code of an arm, disarm or bypass command. Use Trace only briefly, and do not share such a log. The default level does not log access codes.
+
 ### Check logs
 
 ````````
