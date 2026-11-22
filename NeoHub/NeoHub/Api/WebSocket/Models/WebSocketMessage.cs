@@ -119,6 +119,10 @@ namespace NeoHub.Api.WebSocket.Models
         public bool Troubles { get; init; }
         /// <summary>The active trouble types while <see cref="Troubles"/> is set, otherwise empty (PartitionState.TroubleTypes).</summary>
         public IReadOnlyList<string> TroubleTypes { get; init; } = Array.Empty<string>();
+        /// <summary>The partition's siren is sounding (PartitionState.SirenActive).</summary>
+        public bool Siren { get; init; }
+        /// <summary>An alarm is in the partition's memory (PartitionState.AlarmsInMemory).</summary>
+        public bool AlarmMemory { get; init; }
     }
 
     public record ZoneUpdateMessage : WebSocketMessage
@@ -205,6 +209,10 @@ namespace NeoHub.Api.WebSocket.Models
         public bool Troubles { get; init; }
         /// <summary>The active trouble types while <see cref="Troubles"/> is set, otherwise empty (PartitionState.TroubleTypes).</summary>
         public IReadOnlyList<string> TroubleTypes { get; init; } = Array.Empty<string>();
+        /// <summary>The partition's siren is sounding (PartitionState.SirenActive).</summary>
+        public bool Siren { get; init; }
+        /// <summary>An alarm is in the partition's memory (PartitionState.AlarmsInMemory).</summary>
+        public bool AlarmMemory { get; init; }
     }
 
     public record ZoneDto

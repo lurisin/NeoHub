@@ -7,20 +7,32 @@ using NeoHub.Services.Models;
 namespace NeoHub.Services.Handlers
 {
     /// <summary>
-    /// Handles arm/disarm notifications from the panel and updates partition state.
+    /// Handles arm/disarm notifications from the panel and updates partition state. An arm or disarm also turns the
+    /// partition's siren off (<see cref="PartitionConditionsService.ClearSirenForArmDisarm"/>), in the same update.
     /// </summary>
     public class ArmDisarmNotificationHandler
         : INotificationHandler<SessionNotification<NotificationArmDisarm>>
     {
         private readonly IPanelStateService _service;
         private readonly ILogger<ArmDisarmNotificationHandler> _logger;
+        private readonly PartitionConditionsService? _conditions;
 
+        /// <summary>Without the conditions service: the siren is not cleared by an arm or disarm.</summary>
         public ArmDisarmNotificationHandler(
             IPanelStateService service,
             ILogger<ArmDisarmNotificationHandler> logger)
+            : this(service, logger, conditions: null)
+        {
+        }
+
+        public ArmDisarmNotificationHandler(
+            IPanelStateService service,
+            ILogger<ArmDisarmNotificationHandler> logger,
+            PartitionConditionsService? conditions)
         {
             _service = service;
             _logger = logger;
+            _conditions = conditions;
         }
 
         public Task Handle(
@@ -58,6 +70,9 @@ namespace NeoHub.Services.Handlers
             }
 
             partition.LastUpdated = notification.ReceivedAt;
+
+            // A missed "bell off" must not hide the next alarm: any arm or disarm turns the siren off.
+            _conditions?.ClearSirenForArmDisarm(sessionId, partition, _logger);
 
             _service.UpdatePartition(sessionId, partition);
 

@@ -364,7 +364,7 @@ namespace NeoHub.Services.Handlers
                     && (s1.HasFlag(ModulePartitionStatus.PartitionStatus1.ReadyToArm)
                         || s1.HasFlag(ModulePartitionStatus.PartitionStatus1.ReadyToForceArm));
 
-                // The trouble flag (and the trouble types), with the rules shared with the re-reads.
+                // The trouble flag (and the trouble types), siren and alarm memory, with the rules shared with the re-reads.
                 _conditions.ApplyStatusRead(sessionId, session, state, s2, requestedAt, StatusReadKind.ConnectPull, _logger);
 
                 if (s1.HasFlag(ModulePartitionStatus.PartitionStatus1.ExitDelayInProgress))
@@ -384,8 +384,8 @@ namespace NeoHub.Services.Handlers
                 state.LastUpdated = DateTime.UtcNow;
                 _panelState.UpdatePartition(sessionId, state);
 
-                _logger.LogDebug("Partition {Partition} Status1=0x{S1:X} Status2=0x{S2:X} → {Status}, IsReady={IsReady}, TroublesPresent={TroublesPresent}",
-                    partitionNumber, (byte)s1, (byte)s2, state.Status, state.IsReady, state.TroublesPresent);
+                _logger.LogDebug("Partition {Partition} Status1=0x{S1:X} Status2=0x{S2:X} → {Status}, IsReady={IsReady}, TroublesPresent={TroublesPresent}, Siren={Siren}, AlarmsInMemory={AlarmsInMemory}",
+                    partitionNumber, (byte)s1, (byte)s2, state.Status, state.IsReady, state.TroublesPresent, state.SirenActive, state.AlarmsInMemory);
             }
 
             _logger.LogInformation("Pulled initial partition status");

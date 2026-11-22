@@ -10,14 +10,16 @@ using NeoHub.Services.Settings;
 namespace NeoHub.Services
 {
     /// <summary>
-    /// Keeps <see cref="PartitionState.TroublesPresent"/> current while a panel is connected.
+    /// Keeps <see cref="PartitionState.TroublesPresent"/> current while a panel is connected, together with the
+    /// siren and alarm memory bits of the same read.
     ///
     /// The flag is otherwise only read by the status pull when the session connects. For each connected
     /// session, once that pull has finished (<see cref="SessionState.IsInitialized"/>), this service re-reads
     /// <see cref="ModulePartitionStatus"/> for the session's partitions every
     /// <see cref="ConnectionSettings.TroubleRefreshIntervalSeconds"/> seconds (0 = off, at least
-    /// <see cref="ConnectionSettings.MinimumTroubleRefreshIntervalSeconds"/> otherwise) and applies only its trouble
-    /// flag, through <see cref="PartitionConditionsService"/> (which also keeps the trouble types). Status, IsReady and
+    /// <see cref="ConnectionSettings.MinimumTroubleRefreshIntervalSeconds"/> otherwise) and applies only three bits of
+    /// PartitionStatus2 (TroublesPresent, AudibleBellSiren, AlarmsInMemory), through
+    /// <see cref="PartitionConditionsService"/> (which also keeps the trouble types). Status, IsReady and
     /// the exit delay fields are never changed here. A partition is announced only when what clients see of it
     /// changed, so a read that finds no change sends nothing to clients.
     ///
@@ -586,8 +588,9 @@ namespace NeoHub.Services
             $"no answer within {PanelCommandService.PanelAnswerTimeout.TotalSeconds:0} s";
 
         /// <summary>
-        /// Applies the read through <see cref="PartitionConditionsService"/>: only the trouble flag and what derives from
-        /// it, announced (through TryUpdatePartition, which never recreates a removed session) only when it changed.
+        /// Applies the read through <see cref="PartitionConditionsService"/>: only the trouble flag (and what derives from
+        /// it), the siren and the alarm memory, announced (through TryUpdatePartition, which never recreates a removed
+        /// session) only when they changed.
         /// </summary>
         private void ApplyTroubles(SessionWorker worker, byte partition, ModulePartitionStatus.PartitionStatus2 status2, long requestedAt)
         {

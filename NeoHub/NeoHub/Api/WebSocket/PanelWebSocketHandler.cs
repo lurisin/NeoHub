@@ -263,7 +263,9 @@ namespace NeoHub.Api.WebSocket
                                 Status = kvp.Value.EffectiveStatus,
                                 Ready = ReadyForClients(kvp.Value),
                                 Troubles = kvp.Value.TroublesPresent,
-                                TroubleTypes = kvp.Value.TroubleTypes
+                                TroubleTypes = kvp.Value.TroubleTypes,
+                                Siren = kvp.Value.SirenActive,
+                                AlarmMemory = kvp.Value.AlarmsInMemory
                             })
                             .ToList(),
                         Zones = zones
@@ -516,7 +518,7 @@ namespace NeoHub.Api.WebSocket
         /// Sent in full_state so clients know which optional protocol features they can use, in this order. New
         /// capabilities are appended here; "fap" always comes last (<see cref="CurrentCapabilities"/>).
         /// </summary>
-        private static readonly string[] _capabilities = { "command_result", "partition_ready", "partition_troubles", "trouble_types", "keypad_alarms" };
+        private static readonly string[] _capabilities = { "command_result", "partition_ready", "partition_troubles", "trouble_types", "keypad_alarms", "partition_siren_memory" };
 
         /// <summary>Advertised, last, only while AllowFapCommands is on.</summary>
         internal const string FapCapability = "fap";
@@ -595,11 +597,12 @@ namespace NeoHub.Api.WebSocket
                 return;
             }
 
-            _logger.LogDebug("Broadcasting partition_update: Session={SessionId}, Partition={Partition}, Status={Status}, Ready={Ready}, Troubles={Troubles}",
-                e.SessionId, e.Partition.PartitionNumber, e.Partition.EffectiveStatus, ReadyForClients(e.Partition), e.Partition.TroublesPresent);
+            _logger.LogDebug("Broadcasting partition_update: Session={SessionId}, Partition={Partition}, Status={Status}, Ready={Ready}, Troubles={Troubles}, Siren={Siren}, AlarmMemory={AlarmMemory}",
+                e.SessionId, e.Partition.PartitionNumber, e.Partition.EffectiveStatus, ReadyForClients(e.Partition), e.Partition.TroublesPresent,
+                e.Partition.SirenActive, e.Partition.AlarmsInMemory);
 
-            // Raised for every partition update, including a ready-status, trouble or trouble type change with no status
-            // change.
+            // Raised for every partition update, including a ready-status, trouble, trouble type, siren or alarm memory
+            // change with no status change.
             var message = new PartitionUpdateMessage
             {
                 SessionId = e.SessionId,
@@ -607,7 +610,9 @@ namespace NeoHub.Api.WebSocket
                 Status = e.Partition.EffectiveStatus,
                 Ready = ReadyForClients(e.Partition),
                 Troubles = e.Partition.TroublesPresent,
-                TroubleTypes = e.Partition.TroubleTypes
+                TroubleTypes = e.Partition.TroubleTypes,
+                Siren = e.Partition.SirenActive,
+                AlarmMemory = e.Partition.AlarmsInMemory
             };
 
             _ = BroadcastMessageAsync(message);

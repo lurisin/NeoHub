@@ -27,6 +27,19 @@ namespace NeoHub.Services.Models
         /// </summary>
         public IReadOnlyList<string> TroubleTypes { get; set; } = Array.Empty<string>();
 
+        /// <summary>
+        /// The partition's siren (bell) is sounding: the panel reported it on (Notification_Partition_Audible_Bell),
+        /// or a status read showed PartitionStatus2.AudibleBellSiren. Set by
+        /// <see cref="NeoHub.Services.PartitionConditionsService"/>.
+        /// </summary>
+        public bool SirenActive { get; set; }
+
+        /// <summary>
+        /// An alarm is in the partition's memory (PartitionStatus2.AlarmsInMemory, or Notification_Partition_Alarm_Memory).
+        /// Set by <see cref="NeoHub.Services.PartitionConditionsService"/>.
+        /// </summary>
+        public bool AlarmsInMemory { get; set; }
+
         public PartitionStatus Status { get; set; } = PartitionStatus.Unknown;
         public DateTime LastUpdated { get; set; } = DateTime.UtcNow;
 

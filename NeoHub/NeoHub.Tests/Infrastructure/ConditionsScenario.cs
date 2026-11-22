@@ -58,13 +58,22 @@ internal sealed class ConditionsScenario : IAsyncDisposable
 
     public long Request() => Conditions.BeginStatusRead(Session);
 
-    public void Answer(long requestedAt, byte partition, bool troubles, StatusReadKind kind = StatusReadKind.Refresh)
+    public void Answer(long requestedAt, byte partition, bool troubles, StatusReadKind kind = StatusReadKind.Refresh) =>
+        AnswerBits(requestedAt, partition, Status2(troubles), kind);
+
+    /// <summary>A status read answer with these PartitionStatus2 bits.</summary>
+    public void AnswerBits(long requestedAt, byte partition, ModulePartitionStatus.PartitionStatus2 bits, StatusReadKind kind = StatusReadKind.Refresh)
     {
         var state = Session.Partitions[partition];
-        Conditions.ApplyStatusRead(Id, Session, state, Status2(troubles), requestedAt, kind, Log);
+        Conditions.ApplyStatusRead(Id, Session, state, bits, requestedAt, kind, Log);
         if (kind == StatusReadKind.ConnectPull)
             Host.State.UpdatePartition(Id, state);   // the pull announces the partitions it read
     }
+
+    public void ReadBits(byte partition, ModulePartitionStatus.PartitionStatus2 bits) => AnswerBits(Request(), partition, bits);
+
+    public const ModulePartitionStatus.PartitionStatus2 SirenBit = ModulePartitionStatus.PartitionStatus2.AudibleBellSiren;
+    public const ModulePartitionStatus.PartitionStatus2 MemoryBit = ModulePartitionStatus.PartitionStatus2.AlarmsInMemory;
 
     public void Read(byte partition, bool troubles) => Answer(Request(), partition, troubles);
 
@@ -84,6 +93,38 @@ internal sealed class ConditionsScenario : IAsyncDisposable
     public Task Detail(string payload, bool burst = false) =>
         Mediator.Publish(new SessionNotification<TroubleDetailNotification>(
             Id, new TroubleDetailNotification { Payload = Hex(payload), ReceivedInConnectBurst = burst }, DateTime.UtcNow));
+
+    public Task Bell(string payload) =>
+        Mediator.Publish(new SessionNotification<PartitionAudibleBellNotification>(
+            Id, new PartitionAudibleBellNotification { Payload = Hex(payload) }, DateTime.UtcNow));
+
+    public Task Memory(string payload) =>
+        Mediator.Publish(new SessionNotification<PartitionAlarmMemoryNotification>(
+            Id, new PartitionAlarmMemoryNotification { Payload = Hex(payload) }, DateTime.UtcNow));
+
+    public Task ArmDisarm(byte partition, DSC.TLink.ITv2.Enumerations.ArmingMode mode) =>
+        Mediator.Publish(new SessionNotification<NotificationArmDisarm>(
+            Id, new NotificationArmDisarm { Partition = partition, ArmMode = mode, UserId = 1 }, DateTime.UtcNow));
+
+    /// <summary>Siren and alarm memory of a partition, as "siren:on memory:off".</summary>
+    public string SirenMemoryOf(byte partition)
+    {
+        var p = Session.Partitions[partition];
+        return $"siren:{(p.SirenActive ? "on" : "off")} memory:{(p.AlarmsInMemory ? "on" : "off")}";
+    }
+
+    /// <summary>The partition_update frames since <see cref="Mark"/>, as "p1 disarmed siren:on memory:off", and starts a new step.</summary>
+    public List<string> SirenMemoryUpdates()
+    {
+        var frames = Host.Client.FramesSince(_mark);
+        Mark();
+        return frames.Select(f => JsonDocument.Parse(f).RootElement)
+            .Where(r => r.GetProperty("type").GetString() == "partition_update")
+            .Select(r => $"p{r.GetProperty("partition_number").GetInt32()} {r.GetProperty("status").GetString()}"
+                + $" siren:{(r.GetProperty("siren").GetBoolean() ? "on" : "off")}"
+                + $" memory:{(r.GetProperty("alarm_memory").GetBoolean() ? "on" : "off")}")
+            .ToList();
+    }
 
     public static ModulePartitionStatus.PartitionStatus2 Status2(bool troubles) =>
         troubles ? ModulePartitionStatus.PartitionStatus2.TroublesPresent : 0;

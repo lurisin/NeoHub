@@ -2,7 +2,7 @@ namespace NeoHub.Services.Models
 {
     /// <summary>
     /// What <see cref="NeoHub.Services.PartitionConditionsService"/> keeps per session to derive the partitions' trouble
-    /// flags and trouble types. Lives on <see cref="SessionState"/>, so it survives a takeover by a newer connection and
+    /// flags, trouble types, siren and alarm memory. Lives on <see cref="SessionState"/>, so it survives a takeover by a newer connection and
     /// goes with the state on a disconnect. Every member is guarded by <see cref="Gate"/>.
     /// </summary>
     public sealed class PanelConditionsState
@@ -54,5 +54,29 @@ namespace NeoHub.Services.Models
         /// does not explain. Only set together with <see cref="ReadTroubles"/>.
         /// </summary>
         public bool Unknown;
+
+        /// <summary>The siren is on because the panel said so (Notification_Partition_Audible_Bell on).</summary>
+        public bool SirenFromBell;
+
+        /// <summary>The siren is on because a status read showed PartitionStatus2.AudibleBellSiren.</summary>
+        public bool SirenFromBit;
+
+        /// <summary>The disagreement of a read without the siren bit with <see cref="SirenFromBell"/> was logged.</summary>
+        public bool SirenDisagreementLogged;
+
+        /// <summary>Sequence value of the last audible bell "on", 0 if none.</summary>
+        public long LastBellOnAt;
+
+        /// <summary>Sequence value of the last siren clear (audible bell "off", or an arm or disarm), 0 if none.</summary>
+        public long LastSirenClearAt;
+
+        /// <summary>An alarm is in the partition's memory (PartitionStatus2.AlarmsInMemory, or Notification_Partition_Alarm_Memory).</summary>
+        public bool AlarmMemory;
+
+        /// <summary>Sequence value of the last alarm memory notification with a nonzero value, 0 if none.</summary>
+        public long LastMemorySetAt;
+
+        /// <summary>Sequence value of the last alarm memory notification with value zero, 0 if none.</summary>
+        public long LastMemoryClearAt;
     }
 }

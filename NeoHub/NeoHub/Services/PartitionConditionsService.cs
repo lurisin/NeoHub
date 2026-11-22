@@ -25,13 +25,17 @@ namespace NeoHub.Services
     }
 
     /// <summary>
-    /// Derives the partitions' trouble flag (<see cref="PartitionState.TroublesPresent"/>) and trouble types
-    /// (<see cref="PartitionState.TroubleTypes"/>) from the status reads (<see cref="ModulePartitionStatus"/>: the connect
-    /// pull and the re-reads of <see cref="PartitionTroubleRefreshService"/>) and from the panel's trouble details
-    /// (<see cref="TroubleDetailNotification"/>, 0x0823). The state lives on <see cref="SessionState.Conditions"/>, so
-    /// any instance of this service works on the same data.
+    /// Derives the partitions' trouble flag (<see cref="PartitionState.TroublesPresent"/>), trouble types
+    /// (<see cref="PartitionState.TroubleTypes"/>), siren (<see cref="PartitionState.SirenActive"/>) and alarm memory
+    /// (<see cref="PartitionState.AlarmsInMemory"/>) from the status reads (<see cref="ModulePartitionStatus"/>: the
+    /// connect pull and the re-reads of <see cref="PartitionTroubleRefreshService"/>; of PartitionStatus2 only
+    /// TroublesPresent, AudibleBellSiren and AlarmsInMemory are used here) and from the panel's notifications: trouble
+    /// details (<see cref="TroubleDetailNotification"/>, 0x0823), audible bell (<see cref="PartitionAudibleBellNotification"/>,
+    /// 0x023B) and alarm memory (<see cref="PartitionAlarmMemoryNotification"/>, 0x023C). It also passes keypad alarms
+    /// (<see cref="NonZoneAlarmStatusNotification"/>, 0x0841) on. The state lives on <see cref="SessionState.Conditions"/>,
+    /// so any instance of this service works on the same data.
     ///
-    /// Rules:
+    /// Trouble rules:
     /// <list type="bullet">
     /// <item>One panel-wide set of active troubles per session, keyed by the values of the 0x0823 tuple. A state 01 adds
     /// its tuple, a state 00 (restored) or 02 (in memory) removes it. The records of one message are applied in order
@@ -51,6 +55,17 @@ namespace NeoHub.Services
     /// <item>Labels only for the exact values of proven tuples; any other tuple is unknown_&lt;A&gt;_&lt;B&gt;_&lt;C&gt;
     /// from its value bytes as received. The list is the labels in ordinal order, then "unknown"; empty while the
     /// partition's flag is off.</item>
+    /// </list>
+    /// Siren and alarm memory rules (per partition), where a status read never undoes a notification that arrived after
+    /// the read was requested:
+    /// <list type="bullet">
+    /// <item>An audible bell "on" turns the siren on; "off" turns it off, and so does an arm or disarm notification of
+    /// the partition (<see cref="ClearSirenForArmDisarm"/>), so a missed "off" cannot hide the next alarm.</item>
+    /// <item>The connect pull sets the siren from AudibleBellSiren (it was on and stays on only for a bell "on" that
+    /// arrived after the pull's read was requested). A later re-read may turn it on from the bit but never turns off an
+    /// "on" from the bell (a disagreement is logged at Information once); a siren that only the bit turned on goes off
+    /// with a read without the bit.</item>
+    /// <item>Alarm memory follows AlarmsInMemory of every read and 0x023C (nonzero sets, zero clears).</item>
     /// </list>
     /// Partitions are only updated, never created, and a partition_update is sent only for a visible change.
     /// </summary>
@@ -109,9 +124,9 @@ namespace NeoHub.Services
 
         /// <summary>
         /// Applies a status read of <paramref name="partition"/> (which the connect pull may not have stored yet): its
-        /// trouble flag, under the rules above. Announces every other partition whose visible state changed, and this one
-        /// too unless it was read by the connect pull (<paramref name="kind"/>), whose caller announces it. Returns
-        /// whether this partition's visible state changed.
+        /// trouble flag, siren and alarm memory bits, under the rules above. Announces every other partition whose
+        /// visible state changed, and this one too unless it was read by the connect pull (<paramref name="kind"/>),
+        /// whose caller announces it. Returns whether this partition's visible state changed.
         /// </summary>
         public bool ApplyStatusRead(
             string sessionId,
@@ -150,9 +165,62 @@ namespace NeoHub.Services
                     own.Unknown = false;
                 }
 
+                ApplySirenBit(own, partition.PartitionNumber,
+                    status2.HasFlag(ModulePartitionStatus.PartitionStatus2.AudibleBellSiren), requestedAt, kind, log);
+                ApplyMemoryBit(own, partition.PartitionNumber,
+                    status2.HasFlag(ModulePartitionStatus.PartitionStatus2.AlarmsInMemory), requestedAt, log);
+
                 return Publish(sessionId, session, partitions, before, kind == StatusReadKind.ConnectPull ? partition : null, log)
                     .Contains(partition);
             }
+        }
+
+        private static void ApplySirenBit(PartitionConditions own, byte partition, bool bit, long requestedAt, StatusReadKind kind, ILogger log)
+        {
+            var clearedSince = own.LastSirenClearAt > requestedAt;
+            if (kind == StatusReadKind.ConnectPull)
+            {
+                // The pull sets the siren from the bit; only a bell "on" newer than its request keeps the siren on.
+                if (own.LastBellOnAt > requestedAt)
+                {
+                    if (!bit)
+                        log.LogDebug("Partition {Partition} siren kept on: the panel reported it on after the status read was requested", partition);
+                }
+                else
+                {
+                    own.SirenFromBell = false;
+                }
+                own.SirenFromBit = bit && !clearedSince;
+                return;
+            }
+
+            if (bit)
+            {
+                if (clearedSince)
+                    log.LogDebug("Status read of partition {Partition} not used for the siren: it was turned off after the read was requested", partition);
+                else
+                    own.SirenFromBit = true;
+                return;
+            }
+
+            own.SirenFromBit = false;
+            if (own.SirenFromBell && !own.SirenDisagreementLogged)
+            {
+                own.SirenDisagreementLogged = true;
+                log.LogInformation(
+                    "Partition {Partition}: the status read shows no siren, but the panel reported the siren on and not off since; keeping it on",
+                    partition);
+            }
+        }
+
+        private static void ApplyMemoryBit(PartitionConditions own, byte partition, bool bit, long requestedAt, ILogger log)
+        {
+            if (bit && own.LastMemoryClearAt > requestedAt)
+                log.LogDebug("Status read of partition {Partition} not used for the alarm memory: it was cleared after the read was requested", partition);
+            else if (!bit && own.LastMemorySetAt > requestedAt)
+                log.LogDebug("Status read of partition {Partition} not used for the alarm memory: it was set after the read was requested", partition);
+            else
+                own.AlarmMemory = bit;
         }
 
         /// <summary>The connect pull of a (new or taking over) connection starts: trouble details no longer turn flags on.</summary>
@@ -268,6 +336,109 @@ namespace NeoHub.Services
 
         #endregion
 
+        #region Siren (0x023B) and alarm memory (0x023C)
+
+        /// <summary>
+        /// Applies a parsed 0x023B: the partition's siren on or off. Logged at Information, with every field at Debug.
+        /// A partition NeoHub does not know is not created.
+        /// </summary>
+        public void ApplyAudibleBell(string sessionId, AudibleBell bell, ILogger log)
+        {
+            log.LogInformation("Audible bell of partition {Partition} {BellState}", bell.Partition, bell.On ? "on" : "off");
+            log.LogDebug("Audible bell: partition {Partition}, on/off byte 0x{OnOff:X2}, rest {Rest}",
+                bell.Partition, bell.OnOffByte, new DSC.TLink.Extensions.HexBytes(bell.Rest));
+
+            UpdateKnownPartition(sessionId, bell.Partition, "audible bell", log, (c, own) =>
+            {
+                if (bell.On)
+                {
+                    own.SirenFromBell = true;
+                    own.SirenDisagreementLogged = false;
+                    own.LastBellOnAt = ++c.Sequence;
+                }
+                else
+                {
+                    own.SirenFromBell = false;
+                    own.SirenFromBit = false;
+                    own.LastSirenClearAt = ++c.Sequence;
+                }
+            });
+        }
+
+        /// <summary>
+        /// Applies a parsed 0x023C: nonzero sets the partition's alarm memory, zero clears it. Logged at Information.
+        /// A partition NeoHub does not know is not created.
+        /// </summary>
+        public void ApplyAlarmMemory(string sessionId, PartitionAlarmMemory memory, ILogger log)
+        {
+            log.LogInformation("Alarm memory {MemoryState} on partition {Partition} (value 0x{Value:X2})",
+                memory.InMemory ? "set" : "cleared", memory.Partition, memory.Value);
+
+            UpdateKnownPartition(sessionId, memory.Partition, "alarm memory", log, (c, own) =>
+            {
+                own.AlarmMemory = memory.InMemory;
+                if (memory.InMemory)
+                    own.LastMemorySetAt = ++c.Sequence;
+                else
+                    own.LastMemoryClearAt = ++c.Sequence;
+            });
+        }
+
+        /// <summary>
+        /// An arm or disarm notification of <paramref name="partition"/> (which the caller may not have stored yet, and
+        /// announces itself): its siren is turned off. Logged at Information when the siren was on.
+        /// </summary>
+        public void ClearSirenForArmDisarm(string sessionId, PartitionState partition, ILogger log)
+        {
+            var session = _panelState.GetSession(sessionId);
+            if (session is null)
+                return;
+
+            var c = session.Conditions;
+            lock (c.Gate)
+            {
+                var partitions = Snapshot(session, partition);
+                var before = Capture(c, partitions);
+                var own = c.Partitions[partition.PartitionNumber];
+                if (own.SirenFromBell || own.SirenFromBit)
+                    log.LogInformation("Siren cleared by arm/disarm on partition {Partition}", partition.PartitionNumber);
+                own.SirenFromBell = false;
+                own.SirenFromBit = false;
+                own.LastSirenClearAt = ++c.Sequence;
+                Publish(sessionId, session, partitions, before, partition, log);
+            }
+        }
+
+        private void UpdateKnownPartition(string sessionId, int partitionNumber, string what, ILogger log,
+            Action<PanelConditionsState, PartitionConditions> update)
+        {
+            var session = _panelState.GetSession(sessionId);
+            PartitionState? partition = null;
+            if (session is not null && partitionNumber is >= 1 and <= byte.MaxValue)
+                session.Partitions.TryGetValue((byte)partitionNumber, out partition);
+            if (session is null || partition is null)
+            {
+                log.LogInformation("Ignoring the {What} notification of partition {Partition}: not a known partition of the session", what, partitionNumber);
+                return;
+            }
+
+            var c = session.Conditions;
+            lock (c.Gate)
+            {
+                var partitions = Snapshot(session, null);
+                var before = Capture(c, partitions);
+                if (!c.Partitions.TryGetValue(partition.PartitionNumber, out var own))
+                {
+                    log.LogInformation("Ignoring the {What} notification of partition {Partition}: not a known partition of the session", what, partitionNumber);
+                    return;
+                }
+                update(c, own);
+                Publish(sessionId, session, partitions, before, null, log);
+            }
+        }
+
+        #endregion
+
         #region Keypad alarms (0x0841)
 
         /// <summary>The keypad alarm type of a raw alarm type byte.</summary>
@@ -338,9 +509,10 @@ namespace NeoHub.Services
             }
         }
 
-        private readonly record struct Visible(bool Troubles, string TroubleTypes);
+        private readonly record struct Visible(bool Troubles, string TroubleTypes, bool Siren, bool AlarmMemory);
 
-        private static Visible VisibleOf(PartitionState p) => new(p.TroublesPresent, string.Join(",", p.TroubleTypes));
+        private static Visible VisibleOf(PartitionState p) =>
+            new(p.TroublesPresent, string.Join(",", p.TroubleTypes), p.SirenActive, p.AlarmsInMemory);
 
         /// <summary>The visible state of each partition, creating the per-partition entries first.</summary>
         private static Dictionary<PartitionState, Visible> Capture(PanelConditionsState c, List<PartitionState> partitions)
@@ -349,7 +521,12 @@ namespace NeoHub.Services
             foreach (var p in partitions)
             {
                 if (!c.Partitions.ContainsKey(p.PartitionNumber))
-                    c.Partitions[p.PartitionNumber] = new PartitionConditions { ReadTroubles = p.TroublesPresent };
+                    c.Partitions[p.PartitionNumber] = new PartitionConditions
+                    {
+                        ReadTroubles = p.TroublesPresent,
+                        SirenFromBit = p.SirenActive,
+                        AlarmMemory = p.AlarmsInMemory,
+                    };
                 before[p] = VisibleOf(p);
             }
             return before;
@@ -357,8 +534,8 @@ namespace NeoHub.Services
 
         /// <summary>
         /// Recomputes every partition from the tracked state and announces the ones whose visible state changed, except
-        /// <paramref name="pulled"/> (announced by the connect pull, whose flag change is logged at Debug there).
-        /// Returns the partitions that changed.
+        /// <paramref name="pulled"/> (announced by its caller: the connect pull, whose changes are logged at Debug there,
+        /// or an arm or disarm notification). Returns the partitions that changed.
         /// </summary>
         private List<PartitionState> Publish(
             string sessionId,
@@ -384,6 +561,8 @@ namespace NeoHub.Services
                 p.TroublesPresent = flag;
                 if (string.Join(",", types) != old.TroubleTypes)
                     p.TroubleTypes = types;
+                p.SirenActive = entry.SirenFromBell || entry.SirenFromBit;
+                p.AlarmsInMemory = entry.AlarmMemory;
                 if (VisibleOf(p) == old)
                     continue;
 
@@ -392,6 +571,10 @@ namespace NeoHub.Services
                     continue;
                 if (flag != old.Troubles)
                     log.LogInformation("Partition {Partition} troubles {Troubles}", p.PartitionNumber, flag ? "present" : "cleared");
+                if (p.SirenActive != old.Siren)
+                    log.LogInformation("Partition {Partition} siren {Siren}", p.PartitionNumber, p.SirenActive ? "on" : "off");
+                if (p.AlarmsInMemory != old.AlarmMemory)
+                    log.LogInformation("Partition {Partition} alarm memory {AlarmMemory}", p.PartitionNumber, p.AlarmsInMemory ? "set" : "cleared");
                 // Never recreates a partition or session that was removed meanwhile.
                 _panelState.TryUpdatePartition(sessionId, p);
             }
