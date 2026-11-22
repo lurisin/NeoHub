@@ -6,6 +6,7 @@
 @inject IPanelStateService PanelState
 @inject IITv2SessionManager SessionManager
 @inject IJSRuntime JS
+@inject IFapCommandSettings FapSettings
 @implements IDisposable
 
 <!-- ✅ Add MudBlazor Providers -->
@@ -76,6 +77,14 @@
         </div>
 
         <article class="content px-4">
+            @if (FapSettings.AllowFapCommands)
+            {
+                <MudAlert Severity="Severity.Error" Variant="Variant.Filled" Class="mt-2 mb-2">
+                    FAP commands are enabled: Home Assistant can raise a real Fire, Auxiliary or Panic alarm that the
+                    panel reports to the monitoring station. When the test is over, turn "Allow FAP commands" off in
+                    Settings and press Save.
+                </MudAlert>
+            }
             @Body
         </article>
     </main>
@@ -96,6 +105,7 @@
     protected override void OnInitialized()
     {
         PanelState.PartitionStateChanged += OnPartitionStateChanged;
+        FapSettings.Changed += OnFapSettingChanged;
 
         // Refresh UI every second for countdown and audio management
         _refreshTimer = new Timer(_ =>
@@ -118,6 +128,15 @@
             await UpdateExitDelayBeepAsync(HasActiveExitDelay(), _cts.Token);
             if (!_cts.Token.IsCancellationRequested)
                 StateHasChanged();
+        });
+    }
+
+    private void OnFapSettingChanged()
+    {
+        _ = SafeInvokeAsync(() =>
+        {
+            StateHasChanged();
+            return Task.CompletedTask;
         });
     }
 
@@ -206,6 +225,7 @@
         _refreshTimer?.Dispose();
 
         PanelState.PartitionStateChanged -= OnPartitionStateChanged;
+        FapSettings.Changed -= OnFapSettingChanged;
         _cts.Dispose();
     }
 }

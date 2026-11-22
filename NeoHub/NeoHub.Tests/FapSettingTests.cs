@@ -63,7 +63,8 @@ public class FapSettingTests
     [Fact]
     public void Moving_the_switch_without_saving_changes_nothing()
     {
-        // The Settings page binds to the live options object and changes it before Save.
+        // A change of the live options object (the Settings page made one before Save, until it got its own copy)
+        // does not count.
         var config = Memory("false");
         var services = new ServiceCollection();
         services.AddSingleton<IConfiguration>(config);

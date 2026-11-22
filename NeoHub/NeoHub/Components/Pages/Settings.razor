@@ -3,9 +3,12 @@
 @using System.ComponentModel.DataAnnotations
 @using System.Reflection
 @using MudBlazor
+@using NeoHub.Services
 @inject ISettingsDiscoveryService DiscoveryService
 @inject ISettingsPersistenceService PersistenceService
+@inject IFapCommandSettings FapSettings
 @inject ISnackbar Snackbar
+@implements IDisposable
 
 <PageTitle>Settings</PageTitle>
 
@@ -57,6 +60,22 @@
                         {
                             <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-2">@property.Warning</MudAlert>
                         }
+                        @if (_section.SettingsType == typeof(ApplicationSettings)
+                             && property.PropertyName == nameof(ApplicationSettings.AllowFapCommands))
+                        {
+                            @* What NeoHub applies now (the saved value), whatever the switch above shows before Save. *@
+                            <MudAlert Severity="@(FapSettings.AllowFapCommands ? Severity.Error : Severity.Success)" Dense="true" Class="mt-2">
+                                @if (FapSettings.AllowFapCommands)
+                                {
+                                    <span>In effect now: FAP commands are <strong>ON</strong>. Home Assistant can raise a real alarm.</span>
+                                }
+                                else
+                                {
+                                    <span>In effect now: FAP commands are <strong>OFF</strong>.</span>
+                                }
+                                The switch changes this only when you press Save.
+                            </MudAlert>
+                        }
                     </div>
                 }
             }
@@ -91,8 +110,31 @@
     {
         foreach (var section in DiscoveryService.DiscoveredSettings)
         {
-            _settingsInstances[section.SettingsType] = PersistenceService.GetSettings(section.SettingsType);
+            _settingsInstances[section.SettingsType] = LoadSettings(section.SettingsType);
         }
+        FapSettings.Changed += OnFapSettingChanged;
+    }
+
+    /// <summary>
+    /// A fresh copy of a section's settings for this page: the controls edit it, and nothing applies until Save.
+    /// The FAP switch starts from the value in effect, which only the saved settings file sets.
+    /// </summary>
+    private object LoadSettings(Type settingsType)
+    {
+        var settings = PersistenceService.GetSettings(settingsType);
+        if (settings is ApplicationSettings application)
+            application.AllowFapCommands = FapSettings.AllowFapCommands;
+        return settings;
+    }
+
+    private void OnFapSettingChanged()
+    {
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        FapSettings.Changed -= OnFapSettingChanged;
     }
 
     private object GetSectionSettings(SettingsSectionMetadata section)
@@ -191,6 +233,8 @@
         try
         {
             await PersistenceService.SaveSettingsAsync(section.SettingsType, settings);
+            // Show what is in effect now.
+            _settingsInstances[section.SettingsType] = LoadSettings(section.SettingsType);
             Snackbar.Add($"{section.DisplayName} saved successfully!", Severity.Success);
         }
         catch (Exception ex)

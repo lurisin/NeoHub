@@ -57,12 +57,18 @@ namespace NeoHub.Services.Settings
             _log.LogInformation("Settings file: {Path}", SettingsFilePath);
         }
 
+        /// <summary>
+        /// A new instance of the section's settings, bound from the configuration as it is now. The Settings page
+        /// edits this instance, so an edit stays on the page until it is saved, and every load of the page starts
+        /// from the configuration again. (This returned IOptionsMonitor.CurrentValue, the live object that the
+        /// services read: an edit changed it before Save, and later loads of the page showed the unsaved value.)
+        /// </summary>
         public object GetSettings(Type settingsType)
         {
-            var optionsMonitorType = typeof(IOptionsMonitor<>).MakeGenericType(settingsType);
-            var optionsMonitor = _serviceProvider.GetRequiredService(optionsMonitorType);
-            var currentValueProperty = optionsMonitorType.GetProperty("CurrentValue");
-            return currentValueProperty!.GetValue(optionsMonitor)!;
+            var factoryType = typeof(IOptionsFactory<>).MakeGenericType(settingsType);
+            var factory = _serviceProvider.GetRequiredService(factoryType);
+            var create = factoryType.GetMethod(nameof(IOptionsFactory<object>.Create))!;
+            return create.Invoke(factory, new object[] { Options.DefaultName })!;
         }
 
         public async Task SaveSettingsAsync(Type settingsType, object settings)
